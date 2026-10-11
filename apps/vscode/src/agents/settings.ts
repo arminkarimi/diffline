@@ -7,6 +7,7 @@ import path from "node:path";
 import YAML from "yaml";
 
 import type { AgentId } from "../core/types.ts";
+import { isHarnessId, type HarnessId } from "./harness.ts";
 import {
   AGENT_ID,
   BUILT_IN,
@@ -76,10 +77,11 @@ function defaultYaml(): string {
     "# enabled: run this agent. max-findings: at most this many findings.",
     "# min-confidence: minor (keep all), worth-asking (drop Minor) or high (keep only High confidence).",
     "# skip: files the agent ignores. runs-when: only run when a changed file matches (empty means always).",
-    "# harness: claude or codex runs this agent; empty uses the diffline.harness setting in VS Code.",
+    "# harness: claude, codex or pi runs this agent; empty uses the diffline.harness setting in VS Code.",
     "#   \"Diffline: Choose Agent Harnesses…\" sets it. The lede (the briefing's opening line) uses the guide's harness.",
-    "# model: a model for this agent, a name its harness knows (sonnet for claude, for example); empty uses that",
-    "#   harness's model setting in VS Code.",
+    "# model: a model for this agent, a name its harness knows (sonnet for claude, for example; for pi, provider/id with",
+    "#   an optional :<thinking> suffix, such as openai/gpt-6.1-sol:high); empty uses that harness's model setting in",
+    "#   VS Code.",
     "agents:",
   ];
   for (const id of BUILT_IN) lines.push(...agentLines(id, d.agents[id]));
@@ -197,7 +199,7 @@ export async function loadSettings(): Promise<{ settings: ReviewSettings; proble
     }
     const conf = a["min-confidence"];
     const harness = typeof a.harness === "string" ? a.harness.trim() : "";
-    if (harness && harness !== "claude" && harness !== "codex") problems.push(`${id}: unknown harness "${harness}" ignored; use claude or codex`);
+    if (harness && !isHarnessId(harness)) problems.push(`${id}: unknown harness "${harness}" ignored; use claude, codex or pi`);
     let enabled = typeof a.enabled === "boolean" ? a.enabled : def.enabled;
     if (enabled && !hasInstructions(instructions)) {
       if (!builtIn) problems.push(`${id}: agents/${id}.md has no instructions yet, so the agent doesn't run.`);
@@ -211,7 +213,7 @@ export async function loadSettings(): Promise<{ settings: ReviewSettings; proble
       minConfidence: conf === "minor" || conf === "worth-asking" || conf === "high" ? conf : def.minConfidence,
       skip: strings(a.skip, def.skip),
       runsWhen: strings(a["runs-when"], def.runsWhen),
-      harness: harness === "claude" || harness === "codex" ? harness : def.harness,
+      harness: isHarnessId(harness) ? harness : def.harness,
       model: typeof a.model === "string" ? a.model.trim() : def.model,
       instructions,
     };
@@ -273,7 +275,7 @@ export async function removeAgent(id: AgentId): Promise<void> {
  * Set the harness one agent runs on, keeping the rest of agents.yml (comments included) as it is. A model set for the
  * agent belongs to its old harness, so it's cleared when the harness changes; returns the model that was cleared.
  */
-export async function setAgentHarness(id: AgentId, harness: "" | "claude" | "codex"): Promise<{ clearedModel: string | null }> {
+export async function setAgentHarness(id: AgentId, harness: "" | HarnessId): Promise<{ clearedModel: string | null }> {
   await ensureSettings();
   const doc = YAML.parseDocument(await readFile(settingsFile(), "utf8"));
   const before = doc.getIn(["agents", id, "harness"]);
@@ -286,6 +288,14 @@ export async function setAgentHarness(id: AgentId, harness: "" | "claude" | "cod
   doc.setIn(["agents", id, "harness"], harness);
   await writeFile(settingsFile(), doc.toString(YAML_OUT), "utf8");
   return { clearedModel };
+}
+
+/** Set the model one agent runs on (empty for its harness's model setting), keeping the rest of agents.yml as it is. */
+export async function setAgentModel(id: AgentId, model: string): Promise<void> {
+  await ensureSettings();
+  const doc = YAML.parseDocument(await readFile(settingsFile(), "utf8"));
+  doc.setIn(["agents", id, "model"], model);
+  await writeFile(settingsFile(), doc.toString(YAML_OUT), "utf8");
 }
 
 /** Glob matching for skip and runs-when patterns: `**` crosses folders, `*` and `?` don't. */

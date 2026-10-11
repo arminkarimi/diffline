@@ -46,6 +46,18 @@ export function agentEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessE
   return Object.fromEntries(Object.entries(base).filter(([k, v]) => v !== undefined && keep.test(k)));
 }
 
+/**
+ * The environment for Pi: agentEnv, plus Pi's own settings and the variables Pi's built-in providers read (Pi 0.73,
+ * packages/ai env-api-keys.ts), named one by one so other keys in the user's environment stay out. Never GitHub's
+ * tokens, so Pi's GitHub Copilot provider signs in with /login only. Pi runs offline (no package installs, update checks
+ * or tool downloads) and without telemetry, whatever the user's environment says.
+ */
+export function piEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const keep = /^(PI_\w+|AWS_\w+|AZURE_OPENAI_\w+|CLOUDFLARE_(API_KEY|ACCOUNT_ID|GATEWAY_ID)|GOOGLE_CLOUD_(API_KEY|PROJECT|LOCATION)|GOOGLE_APPLICATION_CREDENTIALS|GCLOUD_PROJECT|HF_TOKEN|XIAOMI_\w*API_KEY|(DEEPSEEK|GEMINI|GROQ|CEREBRAS|XAI|OPENROUTER|AI_GATEWAY|ZAI|MISTRAL|MINIMAX|MINIMAX_CN|MOONSHOT|FIREWORKS|OPENCODE|KIMI)_API_KEY)$/;
+  const extra = Object.entries(base).filter(([k, v]) => v !== undefined && keep.test(k));
+  return { ...agentEnv(base), ...Object.fromEntries(extra), PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0" };
+}
+
 /** Run a command without a shell and collect its output. Never throws for a non-zero exit. */
 export function run(command: string, args: readonly string[], options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {

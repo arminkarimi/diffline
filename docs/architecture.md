@@ -12,7 +12,7 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 │ Sidebar     │◄─────────────│   ├─ Repos (core/repos.ts)            │
 │ (tree view) │              │   ├─ Store (core/store.ts)            │
 └─────────────┘              │   ├─ Locks (core/locks.ts)            │
-                             │   └─ runReview (agents/review.ts) ────┼───► claude / codex
+                             │   └─ runReview (agents/review.ts) ────┼───► claude / codex / pi
                              └───────────────────────────────────────┘
 ```
 
@@ -134,7 +134,7 @@ The guide is special: it checks the description, sets the reading order and draw
 
 `src/agents/prompts.ts` builds each agent's prompt: its name, focus and instructions, the pull request's title, description and review threads, the diff, and the rules for naming lines. A diff over 160,000 characters goes to `<run>/diff.patch` for the agent to read instead. Each agent's `skip` patterns leave files out of its diff.
 
-`src/agents/schema.ts` holds the JSON Schemas each agent must return: one for the guide, one for reviewers, one for the briefing's opening line. Every property is required, with nullable values, which both CLIs' structured output accepts.
+`src/agents/schema.ts` holds the JSON Schemas each agent must return: one for the guide, one for reviewers, one for the briefing's opening line. Every property is required, with nullable values, which the structured output of Claude Code and Codex accepts. Pi has no structured output option, so a Pi agent's prompt ends with the schema and asks for only a JSON object.
 
 ### Running a review
 
@@ -148,13 +148,21 @@ The guide is special: it checks the description, sets the reading order and draw
 
 ### Harnesses
 
-`src/agents/harness.ts` runs one prompt through a CLI, headless, and returns its JSON output with token counts (and cost, for Claude Code). Each agent gets the review checkout as its working folder and the run folder to read.
+`src/agents/harness.ts` runs one prompt through a CLI, headless, and returns its JSON output with token counts (and cost, for Claude Code and Pi). Claude Code and Codex agents get the review checkout as their working folder and the run folder to read. Pi agents get an empty folder instead (see below).
 
 **Claude Code** runs with `-p`, `--json-schema`, `--no-session-persistence` and `--permission-mode dontAsk`. `claudeAccessArgs()` limits it to the `Read`, `Grep` and `Glob` tools, with `Read` allowed only inside the checkout and the run folder. Anything else is refused. It has no shell, because even "read-only" git commands take options that write files or run programs. Only the user's own settings load (`--setting-sources user`), with every hook off. MCP servers and slash commands are off.
 
 **Codex** runs `codex exec` with `--sandbox read-only`, `--ephemeral` and `--ignore-user-config`, so `~/.codex/config.toml` (MCP servers, plugins, hooks, notify commands) doesn't apply. Features a read-only review has no use for, such as connectors, plugins, memories, sub-agents and browser use, are turned off. Sign-in still works, because it lives in Codex's auth file.
 
-Both get a minimal environment (`agentEnv()` in `src/core/exec.ts`): what the CLI needs to run, sign in and reach its provider, without the user's other tokens and keys such as `GH_TOKEN`. An agent that runs past `diffline.agents.timeoutMinutes` is stopped. Commands run without a shell.
+**Pi** runs with `--mode json --offline --no-session --tools read,grep,find,ls --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files`, plus `--no-approve` (Pi 0.79 and later: a folder's project files are ignored) and `--no-mcp` (1.0.4 and later: no MCP servers connect) when the installed version has them, then `--model` and `--thinking` when set, then `diffline.pi.extraArgs`. In Pi 1.x, `--no-extensions` also turns off Pi's built-in MCP, tool search and codemode extensions. The prompt goes on stdin. Pi gets only its read, grep, find and ls tools, which can't write files or run commands. Extensions, skills, prompt templates, themes and context files (`AGENTS.md`, `CLAUDE.md`) are off, no session is saved, and offline mode skips update checks, telemetry and package installs. Offline, Pi won't download the ripgrep and fd its grep and find tools use, so without them those tools fail and the agent still has read and ls.
+
+Pi's working folder is never the checkout. Pi always reads `.pi/settings.json` in its working folder, and no flag turns that off; that file can install packages and run commands when Pi starts, and `.pi/SYSTEM.md` would replace the prompt. So each Pi agent runs in an empty folder in the run folder (`pi-<agent id>/`), created before the run and removed after. The prompt gives the checkout's and the base files' absolute paths and asks for repository-relative paths in the answer; paths that still start with the checkout's path are made relative before validation. Like Codex's read-only sandbox, Pi's read tools aren't limited to one folder.
+
+`--model` comes from the agent's `model:` in `agents.yml`, else `diffline.pi.model`, in Pi's syntax (`provider/id`, optionally with `:level`). `--thinking` comes from `diffline.pi.thinking`, validated by Diffline because Pi ignores a bad value, and isn't passed when the agent's own model ends with `:level`. With neither, Pi uses its own defaults, which is safe because the empty folder has no project settings. **Choose Pi model…** lists the signed-in models with `pi --list-models`, run the same way: from an empty folder, offline, with the same `--no-` flags.
+
+`--mode json` prints events as JSON lines. The answer is the text of the last `message_end` event from the assistant, parsed as JSON. A non-zero exit, or a last assistant message whose `stopReason` is `error` or `aborted`, fails the agent with Pi's error ("No API key found" and "No models available" are sign-in errors). A reply cut off at the length limit, or no assistant message, is bad output. Tokens and cost are summed over every assistant message's `usage`, and the reported model is the one Pi used for the last message.
+
+All three get a minimal environment (`agentEnv()` in `src/core/exec.ts`): what the CLI needs to run, sign in and reach its provider, without the user's other tokens and keys such as `GH_TOKEN`. Pi also gets (`piEnv()`) its own `PI_` variables and the variables its built-in providers read, named one by one (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`, `AWS_` for Bedrock, `AZURE_OPENAI_`, Google Cloud's and the like), so other keys in the environment stay out. Never `GH_` or `GITHUB_` tokens: Pi's GitHub Copilot provider signs in with `/login` only. A custom provider in Pi's `models.json` that reads its key from another variable should store the key with Pi instead. `PI_OFFLINE`, `PI_SKIP_VERSION_CHECK` and `PI_TELEMETRY` are always set to keep it offline. An agent that runs past `diffline.agents.timeoutMinutes` is stopped. Commands run without a shell.
 
 ### Validation
 
@@ -221,15 +229,15 @@ JSON files are written to a temporary file and renamed, and writes to one file a
 
 Diffline reads pull requests written by other people, and hands them to agents that can read files. The design assumes a pull request may contain text written to steer the agents (prompt injection).
 
-**What agents can do.** Read the review checkout of the head and the run folder (the diff, and the changed files as they were). Claude Code agents can only read, search and list files in those folders. Codex agents can run commands only inside its read-only sandbox.
+**What agents can do.** Read the review checkout of the head and the run folder (the diff, and the changed files as they were). Claude Code agents can only read, search and list files in those folders. Codex agents can run commands only inside its read-only sandbox. Pi agents can only read, search and list files, but, like Codex's sandbox, not only in those folders.
 
-**What agents can't do.** Write files, change the user's clone (they never see it), run a shell (Claude Code), use MCP servers, hooks, plugins or the repository's own agent settings, read the user's other tokens from the environment, or post anything. Their output is only suggestions on the page.
+**What agents can't do.** Write files, change the user's clone (they never see it), run a shell (Claude Code, Pi), use MCP servers, hooks, plugins, Pi's extensions and skills, or the repository's own agent settings (Pi runs outside the checkout, so a repository's `.pi` folder never loads), read the user's other tokens from the environment, or post anything. Their output is only suggestions on the page.
 
 **Before anything is shown.** Validation drops anchors that aren't in the diff and replaces values outside their allowed sets. The page escapes agent text.
 
 **Before anything is posted.** Only the user posts, with **Post now**. `checkPush()` in `src/core/service.ts` checks that every reply and thread resolution is for a thread on this pull request, and refuses a review that contains what looks like a private key, a token, an API key or a URL with a password (`src/core/secrets.ts`). `pushReview()` checks the decision and every comment's file, line and text.
 
-**Settings from a workspace.** The settings that choose which programs run and where clones are (`diffline.claude.path`, `diffline.codex.path`, their `extraArgs`, `diffline.clones`) are machine-scoped and restricted in untrusted workspaces, so a repository's `.vscode/settings.json` can't change them.
+**Settings from a workspace.** The settings that choose which programs run and where clones are (`diffline.claude.path`, `diffline.codex.path`, `diffline.pi.path`, their `extraArgs`, `diffline.clones`) are machine-scoped and restricted in untrusted workspaces, so a repository's `.vscode/settings.json` can't change them.
 
 **Names from outside.** `parseKey()` accepts only owner and repository names GitHub allows, so a pull request key can't reach outside Diffline's folders. `exportFiles()` skips paths that would leave the run folder.
 

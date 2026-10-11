@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { claudeAccessArgs } from "../src/agents/harness.ts";
-import { agentEnv } from "../src/core/exec.ts";
+import { agentEnv, piEnv } from "../src/core/exec.ts";
 import { Repos } from "../src/core/repos.ts";
 
 test("claudeAccessArgs: file tools only, reads limited to the checkout and run folder, no repository settings or hooks", () => {
@@ -38,6 +38,60 @@ test("agentEnv: keeps what CLIs need to run and sign in, drops other secrets", (
     DATABASE_URL: "postgres://u:p@h/db",
   });
   assert.deepEqual(Object.keys(env).sort(), ["ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK", "CODEX_HOME", "HOME", "HTTPS_PROXY", "LANG", "OPENAI_API_KEY", "PATH"]);
+});
+
+test("piEnv: agentEnv plus Pi's settings and its providers' credentials, never GitHub's tokens or other keys; always offline", () => {
+  const env = piEnv({
+    PATH: "/bin",
+    HOME: "/Users/me",
+    ANTHROPIC_API_KEY: "a",
+    ANTHROPIC_OAUTH_TOKEN: "ao",
+    OPENAI_API_KEY: "o",
+    GEMINI_API_KEY: "g",
+    MISTRAL_API_KEY: "m",
+    AWS_PROFILE: "p",
+    AWS_SECRET_ACCESS_KEY: "y",
+    AZURE_OPENAI_API_KEY: "az",
+    GOOGLE_CLOUD_PROJECT: "gp",
+    CLOUDFLARE_ACCOUNT_ID: "cf",
+    VERTEX_LOCATION: "us",
+    GOOGLE_CLIENT_SECRET: "gs",
+    AZURE_CLIENT_SECRET: "as",
+    STRIPE_API_KEY: "sk",
+    COPILOT_GITHUB_TOKEN: "c",
+    PI_CODING_AGENT_DIR: "/pi",
+    PI_OFFLINE: "0",
+    PI_TELEMETRY: "1",
+    GH_TOKEN: "ghp_secret",
+    GITHUB_TOKEN: "x",
+    GH_ENTERPRISE_TOKEN: "e",
+    GITHUB_API_KEY: "k",
+    GH_API_KEY: "k2",
+    NPM_TOKEN: "z",
+    DATABASE_URL: "postgres://u:p@h/db",
+  });
+  assert.deepEqual(Object.keys(env).sort(), [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_OAUTH_TOKEN",
+    "AWS_PROFILE",
+    "AWS_SECRET_ACCESS_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "GEMINI_API_KEY",
+    "GOOGLE_CLOUD_PROJECT",
+    "HOME",
+    "MISTRAL_API_KEY",
+    "OPENAI_API_KEY",
+    "PATH",
+    "PI_CODING_AGENT_DIR",
+    "PI_OFFLINE",
+    "PI_SKIP_VERSION_CHECK",
+    "PI_TELEMETRY",
+  ]);
+  assert.equal(env.PI_OFFLINE, "1");
+  assert.equal(env.PI_SKIP_VERSION_CHECK, "1");
+  assert.equal(env.PI_TELEMETRY, "0");
+  assert.equal(agentEnv({ GEMINI_API_KEY: "g", PI_CODING_AGENT_DIR: "/pi", AWS_PROFILE: "p" }).GEMINI_API_KEY, undefined, "Claude and Codex don't get Pi's extras");
 });
 
 test("exportFiles: writes files at a commit under their paths, skipping ones that would leave the folder", async () => {

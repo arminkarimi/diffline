@@ -8,7 +8,7 @@ How to work on Diffline. [docs/architecture.md](docs/architecture.md) explains h
 - **git.** The tests build a small git repository as a fixture.
 - **The GitHub CLI** (`gh`), signed in, for running the extension and the smoke tests.
 - **VS Code** 1.95 or later.
-- To run the agents: the Claude Code CLI or the Codex CLI, signed in. Unit tests don't need either.
+- To run the agents: the Claude Code CLI, the Codex CLI or Pi, signed in. Unit tests don't need any of them.
 
 ## Setup
 
@@ -53,7 +53,7 @@ node scripts/smoke-github.ts owner/name#123
 # Build the review page for a pull request and write it to .dev/index.html, to check it in a browser.
 node scripts/dev-page.ts owner/name#123 --clone /path/to/clone
 
-# Run the agents end to end, without VS Code. This uses your Claude Code or Codex account, so it costs money.
+# Run the agents end to end, without VS Code. This uses your Claude Code or Codex account, or the provider account Pi is signed in to, so it costs money.
 node scripts/e2e-agents.ts owner/name#123 --clone /path/to/clone
 ```
 

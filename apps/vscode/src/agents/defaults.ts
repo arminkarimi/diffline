@@ -4,6 +4,7 @@
 // other agent, built in or added, is a reviewer that reports findings and checked notes.
 
 import type { AgentId } from "../core/types.ts";
+import type { HarnessId } from "./harness.ts";
 
 export const GUIDE = "guide";
 
@@ -46,8 +47,8 @@ export interface AgentSettings {
   /** When non-empty, the agent only runs if a changed file matches one of these globs. */
   runsWhen: string[];
   /** The CLI that runs this agent; empty uses the diffline.harness setting. */
-  harness: "" | "claude" | "codex";
-  /** Model for this agent, a name its harness knows; empty uses that harness's model setting. */
+  harness: "" | HarnessId;
+  /** Model for this agent, a name its harness knows (for Pi, with an optional ":<thinking>" suffix); empty uses that harness's model setting. */
   model: string;
   /** The agent's instructions from agents/<id>.md: what to look for and what to leave alone (Markdown). */
   instructions: string;

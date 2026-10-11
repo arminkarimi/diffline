@@ -76,9 +76,13 @@ function prContext(detail: PullRequestDetail | null, data: ReviewData, key: stri
   return lines.join("\n");
 }
 
-const HOW_TO_READ = (data: ReviewData, baseDir: string | null) => `## Reading the code
+const HOW_TO_READ = (data: ReviewData, baseDir: string | null, checkout: string | null) => `## Reading the code
 
-Your working directory is the pull request's code at its head commit (${data.head.short}). Read and search it with your file tools to trace callers, contracts and tests beyond the diff.${baseDir ? ` The changed files as they were before the pull request are under ${baseDir}, at the same paths (new files aren't there).` : ""} You can only read; there's no shell, and nothing you do changes the repository or reaches GitHub.`;
+${
+  checkout
+    ? `The pull request's code at its head commit (${data.head.short}) is in ${checkout}. Your working directory is an empty folder, so always give your file tools absolute paths under ${checkout}. Read and search the code to trace callers, contracts and tests beyond the diff. In your answer, give paths relative to ${checkout}, as the diff does.`
+    : `Your working directory is the pull request's code at its head commit (${data.head.short}). Read and search it with your file tools to trace callers, contracts and tests beyond the diff.`
+}${baseDir ? ` The changed files as they were before the pull request are under ${baseDir}, at the same paths (new files aren't there).` : ""} You can only read; there's no shell, and nothing you do changes the repository or reaches GitHub.`;
 
 const ANCHOR_RULES = `## Pointing at lines
 
@@ -93,6 +97,8 @@ export interface PromptContext {
   diffFile: string | null;
   /** Where the changed files are as they were before the pull request, when they were exported. */
   baseDir?: string | null;
+  /** Set when the agent doesn't work in the checkout (Pi): the checkout's absolute path. */
+  checkout?: string | null;
 }
 
 function diffSection(ctx: PromptContext, id: AgentId): string {
@@ -121,7 +127,7 @@ ${prContext(ctx.detail, ctx.data, ctx.key)}
 
 ${diffSection(ctx, id)}
 
-${HOW_TO_READ(ctx.data, ctx.baseDir ?? null)}
+${HOW_TO_READ(ctx.data, ctx.baseDir ?? null, ctx.checkout ?? null)}
 
 ${ANCHOR_RULES}
 
@@ -154,7 +160,7 @@ ${prContext(ctx.detail, ctx.data, ctx.key)}
 
 ${diffSection(ctx, GUIDE)}
 
-${HOW_TO_READ(ctx.data, ctx.baseDir ?? null)}
+${HOW_TO_READ(ctx.data, ctx.baseDir ?? null, ctx.checkout ?? null)}
 
 ${ANCHOR_RULES}
 

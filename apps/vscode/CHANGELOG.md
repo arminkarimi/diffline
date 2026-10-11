@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Pi as a third harness.** Agents can run on [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), with any model provider you've signed in to with Pi. Pi agents get only Pi's read tools, run offline in an empty folder of their own, and report cost. Choose the model and thinking level with **Choose Pi model…** in **Choose Agent Harnesses…**, `diffline.pi.model` and `diffline.pi.thinking`, or per agent with `model:` in `agents.yml`.
 - **The review page follows the sidebar.** Changing the sidebar's grouping or sort order updates an open review page's list without a reload.
 - **Documentation**: [features](https://github.com/arminkarimi/diffline/blob/main/docs/features.md), [architecture](https://github.com/arminkarimi/diffline/blob/main/docs/architecture.md) and [contributing](https://github.com/arminkarimi/diffline/blob/main/CONTRIBUTING.md) guides.
 - **Continuous integration**: every push and pull request runs the typecheck and tests, and builds the `.vsix`.

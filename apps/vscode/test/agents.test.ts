@@ -176,12 +176,15 @@ test("harnessFor: an agent's own harness, else the default; the lede follows the
     default: "claude" as const,
     claude: { id: "claude" as const, command: "claude", model: "sonnet", extraArgs: [] },
     codex: { id: "codex" as const, command: "codex", model: "", extraArgs: [] },
+    pi: { id: "pi" as const, command: "pi", model: "", extraArgs: [], thinking: "" },
   };
   assert.equal(harnessFor("tests", settings, harnesses).id, "claude");
   settings.agents.guide.harness = "codex";
   assert.equal(harnessFor("guide", settings, harnesses).id, "codex");
   assert.equal(harnessFor("lede", settings, harnesses).id, "codex");
   assert.equal(harnessFor("security", settings, { ...harnesses, default: "codex" }).id, "codex");
+  settings.agents.tests.harness = "pi";
+  assert.equal(harnessFor("tests", settings, harnesses).id, "pi");
 });
 
 test("token usage: Claude counts cache reads and writes as input; Codex sums its turns", async () => {
@@ -208,7 +211,7 @@ test("settings: per-agent harness is read, validated, and written without losing
   const prev = process.env.DIFFLINE_HOME;
   process.env.DIFFLINE_HOME = await mkdtemp(path.join(os.tmpdir(), "diffline-settings-"));
   try {
-    const { ensureSettings, loadSettings, setAgentHarness, settingsFile } = await import("../src/agents/settings.ts");
+    const { ensureSettings, loadSettings, setAgentHarness, setAgentModel, settingsFile } = await import("../src/agents/settings.ts");
     await ensureSettings();
     let { settings, problems } = await loadSettings();
     assert.equal(settings.agents.guide.harness, "");
@@ -220,17 +223,24 @@ test("settings: per-agent harness is read, validated, and written without losing
     assert.deepEqual(await setAgentHarness("correctness", "codex"), { clearedModel: "sonnet" });
     assert.deepEqual(await setAgentHarness("guide", "codex"), { clearedModel: null });
     const after = await readFile(settingsFile(), "utf8");
-    assert.match(after, /# harness: claude or codex runs this agent/, "comments are kept");
+    assert.match(after, /# harness: claude, codex or pi runs this agent/, "comments are kept");
     ({ settings } = await loadSettings());
     assert.equal(settings.agents.guide.harness, "codex");
     assert.equal(settings.agents.correctness.harness, "codex");
     assert.equal(settings.agents.correctness.model, "");
     assert.equal(settings.agents.tests.harness, "");
 
-    await writeFile(settingsFile(), after.replace(/(  tests:[\s\S]*?harness: )""/, '$1"pi"'), "utf8");
+    await writeFile(settingsFile(), after.replace(/(  tests:[\s\S]*?harness: )""/, '$1"gemini"').replace(/(  security:[\s\S]*?harness: )""/, '$1pi'), "utf8");
     ({ settings, problems } = await loadSettings());
     assert.equal(settings.agents.tests.harness, "");
-    assert.match(problems.join(" "), /tests: unknown harness "pi"/);
+    assert.match(problems.join(" "), /tests: unknown harness "gemini" ignored; use claude, codex or pi/);
+    assert.equal(settings.agents.security.harness, "pi", "harness: pi is read");
+
+    // A Pi agent's model takes Pi's syntax, a thinking suffix included, and is written without losing comments.
+    await setAgentModel("security", "openai/gpt-6.1-sol:high");
+    ({ settings } = await loadSettings());
+    assert.equal(settings.agents.security.model, "openai/gpt-6.1-sol:high");
+    assert.match(await readFile(settingsFile(), "utf8"), /# model: a model for this agent/);
   } finally {
     if (prev === undefined) delete process.env.DIFFLINE_HOME;
     else process.env.DIFFLINE_HOME = prev;

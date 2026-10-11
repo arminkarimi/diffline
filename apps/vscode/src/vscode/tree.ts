@@ -162,7 +162,7 @@ export class PullRequestTree implements vscode.TreeDataProvider<Node>, vscode.Di
       );
     }
     if (r.run.state === "done" && (r.run.tokens || r.run.costUsd != null)) {
-      const parts = [r.run.tokens ? formatTokens(r.run.tokens) : "", r.run.costUsd != null ? `$${r.run.costUsd.toFixed(2)}${r.run.tokens ? " for the Claude agents" : ""}` : ""];
+      const parts = [r.run.tokens ? formatTokens(r.run.tokens) : "", r.run.costUsd != null ? `$${r.run.costUsd.toFixed(2)}${r.run.tokens ? " for the agents that report one" : ""}` : ""];
       md.appendMarkdown(`  \nLast run: ${parts.filter(Boolean).join(", ")}`);
     }
     if (r.run.note) {

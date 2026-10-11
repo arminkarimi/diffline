@@ -11,7 +11,7 @@ Every feature is described in [Features](https://github.com/arminkarimi/diffline
 - **VS Code** 1.95 or later.
 - **GitHub CLI** ([cli.github.com](https://cli.github.com)), signed in: `gh auth login`. Diffline reads pull requests and posts reviews through it.
 - **git**.
-- **An agent harness**: the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) (`claude`) or the [Codex CLI](https://github.com/openai/codex) (`codex`), installed and signed in. Use one or both: **Diffline: Choose Agent Harnesses…** sets the default and, if you like, a different one per agent.
+- **An agent harness**: the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) (`claude`), the [Codex CLI](https://github.com/openai/codex) (`codex`) or [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (`pi`), installed and signed in. Pi works with many model providers: sign in by running `pi`, then `/login`, or set your provider's API key. Use one or more: **Diffline: Choose Agent Harnesses…** sets the default and, if you like, a different one per agent.
 
 ## Install
 
@@ -26,7 +26,7 @@ Reload the window if VS Code asks. To update, install the newer `.vsix` the same
 
 1. Click the Diffline icon in the activity bar. The sidebar lists your open pull requests within a few seconds. If it stays empty, see [Troubleshooting](#troubleshooting).
 2. Diffline writes its default agent settings to `~/.diffline` and says so. **Customize** opens them; you can leave them as they are.
-3. Run **Diffline: Choose Agent Harnesses…**. It shows which CLIs it found and their versions. Pick Claude Code or Codex as the default.
+3. Run **Diffline: Choose Agent Harnesses…**. It shows which CLIs it found and their versions. Pick Claude Code, Codex or Pi as the default. After you pick Pi, **Choose Pi model…** lists the models you're signed in to and then the thinking levels; keep Pi's default for both if you like.
 4. Pick a pull request to open its review. Press Run (the sparkle button on its row) to start the agents on it.
 
 Automatic runs are on by default. About two minutes after Diffline first starts, the agents begin on every open pull request that requests your review by name. If you'd rather start each run yourself, turn off `diffline.agents.autoRun` in those two minutes, or before you install.
@@ -60,7 +60,7 @@ Automatic runs are on by default. About two minutes after Diffline first starts,
 
 2. **Watching GitHub.** Diffline checks GitHub every minute with one GraphQL search through `gh`: review requests, assignments, pull requests you've reviewed, your pull requests, watched repositories. The last list shows at startup while it refreshes. Once the list shows, a second request in the background finds the pull requests you could review, loads changed files for the risk scores (cached by commit, so only new pushes are fetched again), and checks `CODEOWNERS` against your teams (both cached for an hour).
 3. **Agents run automatically** only on pull requests that request your review by name (not team requests, assignments, code-owner matches or others you could review: press Run on those), when they open and after each push: a 2-minute quiet period lets a burst of pushes count once, drafts are skipped, and each pull request gets at most 5 automatic runs. Pull requests over 100 files or 5,000 changed lines wait for you to press Run. Any pull request can be run by hand from the sidebar or the review page. When there's something new since the last agent review (new commits, or a description, comment or review update on GitHub), Run starts right away. When the agents already reviewed the latest commit and nothing has changed since, Run asks before reviewing again, since a second run would mostly repeat the first. Automatic runs only follow new commits. When a run finishes, Diffline tells you and can reload the review. With several VS Code windows open, one window starts the automatic runs and a pull request's agents run in one window at a time; the others show the run as "running in another window".
-4. **The agents** run in parallel: the guide (description check, chapters, flow diagram) and the reviewers, by default architecture, correctness, tests and security, plus any you add. Each runs the harness headless in a checkout of the pull request's head that Diffline makes for the run (and deletes after), with the changed files as they were before beside it. Claude Code agents get file tools only (read, search, list), limited to those folders: no shell, no repository settings or hooks, no MCP servers. Codex agents run in its read-only sandbox. Both get a minimal environment, without your other tokens and keys. Every line an agent points at is checked against the diff; anchors that don't resolve are dropped rather than posted on the wrong line.
+4. **The agents** run in parallel: the guide (description check, chapters, flow diagram) and the reviewers, by default architecture, correctness, tests and security, plus any you add. Each runs the harness headless on a checkout of the pull request's head that Diffline makes for the run (and deletes after), with the changed files as they were before beside it. Claude Code agents get file tools only (read, search, list), limited to those folders: no shell, no repository settings or hooks, no MCP servers. Codex agents run in its read-only sandbox. Pi agents get only Pi's read, grep, find and ls tools: no shell, no extensions, skills or context files, no saved session, and offline mode (no update checks, telemetry or package installs). Pi runs in an empty folder of Diffline's own, never inside the checkout, because Pi always loads a repository's `.pi/settings.json` (which can install packages and run commands) and `.pi/SYSTEM.md`; the agent reads the checkout by its full path. Like Codex's sandbox, Pi's read tools aren't limited to one folder. All of them get a minimal environment, without your other tokens and keys; Pi also gets your model providers' credentials and its own `PI_` settings, never GitHub tokens. Every line an agent points at is checked against the diff; anchors that don't resolve are dropped rather than posted on the wrong line.
 5. **The review page** is the Diffline page from `packages/review-ui`, in a VS Code panel: the briefing, chapters, Map, description check, Discussion, drafts, the finish sheet and posting. Its list (Home, or the back arrow) shows the same pull requests in the same groups and order as the sidebar.
 
 ## Fast by design
@@ -81,18 +81,20 @@ Diffline ships five agents. The **guide** is special: it checks the description,
 
 **Your own agents.** **Diffline: New Agent…** (or **New agent…** in **Customize Agents…**) asks for a name and a focus, adds the agent to `agents.yml`, and opens `agents/<id>.md` for its instructions. It's a reviewer like the built-in ones, with the same options, and it runs once its file has instructions. You can also add a block to `agents.yml` and the file by hand. **Remove an Agent…** takes one out of `agents.yml` (its instructions stay); any agent but the guide can go, and **Reset Agent Settings** brings back the built-in ones. Ids are 2 to 32 lowercase letters, digits or dashes. Problems, such as a bad id or an agent without instructions, are listed in **Diffline: Show Agent Log**.
 
-Agents run lean. Claude Code agents start without your MCP servers, plugins' skills and slash commands. Codex agents start with `--ignore-user-config`, so your `~/.codex/config.toml` (MCP servers, plugins, hooks, the default model and effort, the service tier) doesn't apply, and connectors, plugins, memories, sub-agents, goals, image generation and browser use are off. Set the Codex model in `diffline.codex.model` and anything else in `diffline.codex.extraArgs`, such as `["-c", "model_reasoning_effort=\"high\""]`.
+Agents run lean. Claude Code agents start without your MCP servers, plugins' skills and slash commands. Codex agents start with `--ignore-user-config`, so your `~/.codex/config.toml` (MCP servers, plugins, hooks, the default model and effort, the service tier) doesn't apply, and connectors, plugins, memories, sub-agents, goals, image generation and browser use are off. Set the Codex model in `diffline.codex.model` and anything else in `diffline.codex.extraArgs`, such as `["-c", "model_reasoning_effort=\"high\""]`. Pi agents start without extensions, skills, prompt templates, themes or context files (`AGENTS.md`, `CLAUDE.md`).
+
+**Pi's model and thinking level.** By default Pi agents use the model and thinking level set in Pi. `diffline.pi.model` takes Pi's model syntax, `provider/id` with an optional `:level`, and `diffline.pi.thinking` sets the thinking level: `off`, `minimal`, `low`, `medium`, `high` or `xhigh`. Pi lowers a level the model doesn't support. For a single agent, set `model:` in `agents.yml` the same way, such as `model: openai/gpt-6.1-sol:high`; a `:level` there wins over `diffline.pi.thinking`. **Diffline: Choose Agent Harnesses…** offers **Choose Pi model…** with the models you're signed in to, for the default or for one agent.
 
 Open the files with **Diffline: Customize Agents…**, and restore the defaults with **Diffline: Reset Agent Settings**. Changes apply to the next run.
 
 ## What it costs
 
-Diffline adds no charges of its own. The agents use your Claude Code or Codex account, so their usage counts against your plan's limits or, with an API key, is billed to it.
+Diffline adds no charges of its own. The agents use your Claude Code or Codex account, or the provider account you signed in to Pi with, so their usage counts against your plan's limits or, with an API key, is billed to it.
 
 - One run starts one CLI process per enabled agent (five by default), plus a short one for the briefing's opening line. Each reads the diff and the files it needs.
 - Automatic runs follow each push to pull requests that request your review, at most 5 per pull request. Large pull requests wait for you to press Run.
-- `diffline.claude.model` defaults to `sonnet`. Larger models cost more.
-- **Diffline: Show Agent Log** shows each run's tokens and, for Claude Code, its cost. Codex doesn't report cost.
+- `diffline.claude.model` defaults to `sonnet`. Pi uses the model set in Pi unless `diffline.pi.model` says otherwise. Larger models and higher thinking levels cost more.
+- **Diffline: Show Agent Log** shows each run's tokens and, for Claude Code and Pi, its cost. Codex doesn't report cost. Pi works its cost out from the model's API prices, so when you've signed in to Pi with a subscription (Claude Pro or Max, ChatGPT, GitHub Copilot) it's an estimate, not a charge.
 
 To spend less: turn off `diffline.agents.autoRun`, lower `diffline.agents.maxAutomaticRuns`, turn agents off in `agents.yml`, or list only the ones you want in `diffline.agents.enabled`.
 
@@ -100,29 +102,33 @@ To spend less: turn off `diffline.agents.autoRun`, lower `diffline.agents.maxAut
 
 What stays on your computer:
 
-- Your drafts, reviewed marks and decisions, agent results, cached diffs and run logs, in VS Code's global storage for the extension. Run folders keep each agent's prompt, raw output and log, and `usage.json` with each agent's harness, model, time, tokens and (for Claude Code) cost.
+- Your drafts, reviewed marks and decisions, agent results, cached diffs and run logs, in VS Code's global storage for the extension. Run folders keep each agent's prompt, raw output and log, and `usage.json` with each agent's harness, model, time, tokens and (for Claude Code and Pi) cost.
 - Agent settings in `~/.diffline`.
 - Clones: the one in your workspace, the ones in `diffline.clones`, or Diffline's own partial clone in its global storage.
 
 What leaves it:
 
 - **GitHub**, through `gh` and `git`: Diffline reads pull requests, reviews, comments, checks, changed files, `CODEOWNERS` and your teams, and fetches commits. It writes to GitHub only when you press **Post now**: one review with your comments and decision, then your replies and the thread resolutions you queued. **Finish review → Preview what's sent** shows the exact requests first.
-- **Your model provider**, through the agent CLI: the agents send the diff, the pull request's title, description and review threads, and the files they read to Anthropic (Claude Code) or OpenAI (Codex), under your account's terms. Agents only read: a checkout of the pull request made for the run, never your own clone.
+- **Your model provider**, through the agent CLI: the agents send the diff, the pull request's title, description and review threads, and the files they read to Anthropic (Claude Code), OpenAI (Codex) or the provider of the model Pi uses, under your account's terms. Agents only read: a checkout of the pull request made for the run, never your own clone.
 - **Nothing else.** The review page uses VS Code's fonts and loads no remote images, fonts or scripts, and Diffline has no telemetry.
 
-**Pull requests can contain text written to steer the agents** (prompt injection). Claude Code agents can't run commands or read outside the run's folders; Codex agents run commands only inside its read-only sandbox. Neither can change files, and their findings are only suggestions: nothing reaches GitHub unless you add it to your review and post it. Before posting, Diffline refuses a review that contains what looks like a private key or token. Settings that choose which programs run (`diffline.claude.path`, `diffline.codex.path`, their `extraArgs`, `diffline.clones`) are user settings only, so a repository's `.vscode/settings.json` can't change them. The [architecture notes](https://github.com/arminkarimi/diffline/blob/main/docs/architecture.md#security-model) describe the security model in full.
+**Pull requests can contain text written to steer the agents** (prompt injection). Claude Code agents can't run commands or read outside the run's folders; Codex agents run commands only inside its read-only sandbox; Pi agents can't run commands, and only read, search and list files. None can change files, and their findings are only suggestions: nothing reaches GitHub unless you add it to your review and post it. Before posting, Diffline refuses a review that contains what looks like a private key or token. Settings that choose which programs run (`diffline.claude.path`, `diffline.codex.path`, `diffline.pi.path`, their `extraArgs`, `diffline.clones`) are user settings only, so a repository's `.vscode/settings.json` can't change them. The [architecture notes](https://github.com/arminkarimi/diffline/blob/main/docs/architecture.md#security-model) describe the security model in full.
 
 ## Settings
 
 | Setting | Default | What it does |
 |---|---|---|
-| `diffline.harness` | `claude` | The default harness, `claude` or `codex`; an agent can set its own in `agents.yml` |
+| `diffline.harness` | `claude` | The default harness, `claude`, `codex` or `pi`; an agent can set its own in `agents.yml` |
 | `diffline.claude.path` | `claude` | The Claude Code CLI, or the full path to it |
 | `diffline.claude.model` | `sonnet` | Model for agents on Claude Code; empty uses the CLI's default |
 | `diffline.claude.extraArgs` | none | Extra arguments for every `claude` run |
 | `diffline.codex.path` | `codex` | The Codex CLI, or the full path to it |
 | `diffline.codex.model` | empty | Model for agents on Codex; empty uses the CLI's default |
 | `diffline.codex.extraArgs` | none | Extra arguments for every `codex exec` run |
+| `diffline.pi.path` | `pi` | Pi, or the full path to it |
+| `diffline.pi.model` | empty | Model for agents on Pi, as `provider/id` with an optional `:level`; empty uses Pi's default |
+| `diffline.pi.thinking` | empty | Thinking level for agents on Pi: `off`, `minimal`, `low`, `medium`, `high` or `xhigh`; empty uses Pi's default |
+| `diffline.pi.extraArgs` | none | Extra arguments for every `pi` run |
 | `diffline.agents.autoRun` | on | Run automatically on pull requests that request your review by name |
 | `diffline.agents.enabled` | empty | Run only these agent ids; empty runs every agent `agents.yml` turns on |
 | `diffline.agents.maxParallel` | 5 | Agent processes at once |
@@ -149,7 +155,9 @@ What leaves it:
 
 - **The sidebar is empty, or the status bar shows a warning.** Run `gh auth status` in a terminal, and `gh auth login` if you're signed out. Hover the warning for GitHub's error. Team requests and code-owner matches need the `read:org` scope: `gh auth refresh -s read:org`.
 - **"The GitHub CLI (gh) isn't installed or isn't on the PATH."** Install it, then restart VS Code.
-- **An agent harness isn't found, or agents fail with a sign-in error.** **Diffline: Choose Agent Harnesses…** shows "not found" next to a CLI it can't run. Set `diffline.claude.path` or `diffline.codex.path` to the full path (`which claude`, `which codex`). Run the CLI once in a terminal to sign in. A missing or signed-out CLI fails only the agents that use it.
+- **An agent harness isn't found, or agents fail with a sign-in error.** **Diffline: Choose Agent Harnesses…** shows "not found" next to a CLI it can't run. Install it, or set `diffline.claude.path`, `diffline.codex.path` or `diffline.pi.path` to the full path (`which claude`, `which codex`, `which pi`). Run the CLI once in a terminal to sign in. A missing or signed-out CLI fails only the agents that use it.
+- **Pi agents fail with "No API key found" or "No models available".** Pi isn't signed in to a model provider. Run `pi` in a terminal, then `/login`, or set your provider's API key. If the log says a model isn't found, check `diffline.pi.model` or the agent's `model:`.
+- **Pi agents can't search (grep or find fail).** Pi's grep and find tools use ripgrep (`rg`) and fd. Pi normally downloads them, but Diffline runs it offline, so it won't. Install both, or run `pi` once in a terminal so it downloads them. Without them, the agents can still read and list files.
 - **Agents fail or find nothing.** **Diffline: Show Agent Log** has each run's agents, errors, tokens and cost. Problems in `agents.yml`, like a bad id or an agent without instructions, are listed there too. For more, each run keeps every agent's prompt, raw output and log in the extension's global storage, under `runs/` (on macOS, `~/Library/Application Support/Code/User/globalStorage/arminkarimi.diffline/runs`).
 - **Agents say they're running in another window.** Another VS Code window is running them. Stop them there, or wait.
 - **Installing from a terminal prints `DeprecationWarning: url.parse() …`.** That comes from VS Code's own command-line tool, not Diffline. It's harmless; the install still works.

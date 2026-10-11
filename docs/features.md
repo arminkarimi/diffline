@@ -62,7 +62,9 @@ The agents' settings live in `~/.diffline`, written with defaults on first run:
 
 **Diffline: New Agent…** asks for a name and a focus, adds the agent, and opens its instructions file. It runs once that file has instructions. **Remove an Agent…** takes one out (its instructions stay), and **Reset Agent Settings** brings back the built-in ones.
 
-**Per-agent harness.** Each agent runs on Claude Code or Codex. **Diffline: Choose Agent Harnesses…** shows which CLIs are installed and their versions, sets the default, and sets a harness for any single agent. A model can be set per agent too.
+**Per-agent harness.** Each agent runs on Claude Code, Codex or Pi. **Diffline: Choose Agent Harnesses…** shows which CLIs are installed and their versions, sets the default, and sets a harness for any single agent. A model can be set per agent too.
+
+**Pi's model and thinking level.** Pi works with many model providers. By default its agents use the model and thinking level set in Pi. When you pick Pi, **Choose Pi model…** lists the models you're signed in to, then the thinking levels (off, minimal, low, medium, high, xhigh), for the default or for one agent. For one agent, it writes Pi's model syntax into `model:` in `agents.yml`, such as `model: openai/gpt-6.1-sol:high`, where `:high` is the thinking level.
 
 ## The Map
 

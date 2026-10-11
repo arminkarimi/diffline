@@ -1,6 +1,6 @@
 # Diffline
 
-Diffline is a VS Code extension for reviewing GitHub pull requests. Review agents run on your computer, through the Claude Code CLI or the Codex CLI, before you read a line. They check the description, set a reading order, draw the flow the change touches and report findings. You review in one page, decide what goes into your review, and post it to GitHub. Nothing reaches GitHub until you press **Post now**.
+Diffline is a VS Code extension for reviewing GitHub pull requests. Review agents run on your computer, through the Claude Code CLI, the Codex CLI or Pi, before you read a line. They check the description, set a reading order, draw the flow the change touches and report findings. You review in one page, decide what goes into your review, and post it to GitHub. Nothing reaches GitHub until you press **Post now**.
 
 ## Status
 
@@ -8,7 +8,7 @@ Preview, version 0.1.0. It reviews real pull requests, and it has rough edges. D
 
 ## Install
 
-You need VS Code 1.95 or later, git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI or the Codex CLI signed in.
+You need VS Code 1.95 or later, git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI, the Codex CLI or Pi signed in.
 
 Install the `.vsix` file:
 
@@ -25,7 +25,7 @@ The [extension's README](apps/vscode/README.md) covers the first run, settings, 
 - **Reading order.** The guide agent groups the changed files into chapters, so files that define things come before the files that use them.
 - **Description check.** The guide checks the description against the rules for a feature or a fix. Each gap comes with a question you can ask the author or skip.
 - **Agents review first.** Architecture, correctness, test and security agents report findings with their reasoning and a suggested fix. You add each one to your review or dismiss it with a reason. Approval waits until every high finding has a decision.
-- **Your own agents.** Add reviewers with their own instructions, and pick Claude Code or Codex per agent.
+- **Your own agents.** Add reviewers with their own instructions, and pick Claude Code, Codex or Pi per agent.
 - **The Map.** The change as a diagram of how the code runs, linked to the lines each step stands for. **Follow the flow** walks the diff in that order.
 - **Risk score.** Every pull request gets a score from 0 to 100, with the factors behind it.
 - **Pick up where you left off.** Reviewed marks are kept per hunk. After new pushes, only what changed comes back.

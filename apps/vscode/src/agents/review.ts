@@ -6,7 +6,7 @@ import path from "node:path";
 import type { AgentFile, AgentId, PullRequestDetail, ReviewData } from "../core/types.ts";
 import type { Semaphore } from "../core/limit.ts";
 import { DESC_RULES, GUIDE, type ReviewSettings } from "./defaults.ts";
-import { addTokens, formatTokens, HarnessError, runAgent, type HarnessConfig, type HarnessId, type TokenUsage } from "./harness.ts";
+import { addTokens, formatTokens, HarnessError, piModelThinking, runAgent, type HarnessConfig, type HarnessId, type TokenUsage } from "./harness.ts";
 import { guidePrompt, INLINE_DIFF_LIMIT, ledePrompt, renderDiff, reviewerPrompt, type PromptContext } from "./prompts.ts";
 import { guideSchema, ledeSchema, reviewerSchema, type GuideOutput, type ReviewerOutput } from "./schema.ts";
 import { matchesAny } from "./settings.ts";
@@ -23,6 +23,7 @@ export interface Harnesses {
   default: HarnessId;
   claude: HarnessConfig;
   codex: HarnessConfig;
+  pi: HarnessConfig;
 }
 
 /** The harness an agent runs on: its own from agents.yml, else the default. The lede uses the guide's. */
@@ -61,7 +62,7 @@ export interface ReviewRunResult {
   file: AgentFile;
   problems: Problems;
   failed: AgentFailure[];
-  /** Claude Code agents' cost; Codex doesn't report one. */
+  /** The cost Claude Code and Pi agents report; Codex doesn't report one. */
   costUsd: number | null;
   tokens: TokenUsage | null;
   ms: number;
@@ -133,8 +134,16 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   for (const id of run) progress.agents[id] = { state: "queued" };
   emit();
   const harnessOf = (id: AgentId | "lede") => harnessFor(id, input.settings, input.harnesses);
+  // Pi works outside the checkout (harness.ts says why), so its prompt names the checkout's folder.
+  const ctxFor = (id: AgentId): PromptContext => (harnessOf(id).id === "pi" ? { ...ctx, checkout: input.repoPath } : ctx);
   const modelOf = (id: AgentId | "lede") => input.settings.agents[id === "lede" ? GUIDE : id].model || harnessOf(id).model || "default model";
-  void log(`run ${input.key} @ ${input.data.head.short}: ${run.map((id) => `${id} (${harnessOf(id).id}, ${modelOf(id)})`).join(", ")}; skipped ${skipped.map((s) => `${s.id} (${s.why})`).join(", ") || "none"}`);
+  // Pi's diffline.pi.thinking applies unless the agent's own model names a level (see piArgs).
+  const thinkingOf = (id: AgentId) => {
+    const h = harnessOf(id);
+    const own = input.settings.agents[id].model;
+    return h.id === "pi" && h.thinking && !(own && piModelThinking(own)) ? `, thinking ${h.thinking}` : "";
+  };
+  void log(`run ${input.key} @ ${input.data.head.short}: ${run.map((id) => `${id} (${harnessOf(id).id}, ${modelOf(id)}${thinkingOf(id)})`).join(", ")}; skipped ${skipped.map((s) => `${s.id} (${s.why})`).join(", ") || "none"}`);
 
   const failed: AgentFailure[] = [];
   let cost: number | null = null;
@@ -155,6 +164,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
           cwd: input.repoPath,
           readDirs: [input.runDir],
           model: model || undefined,
+          workDir: path.join(input.runDir, `${harness.id}-${id}`),
           timeoutMs,
           signal: input.signal,
           onLog: (line) => void appendFile(path.join(input.runDir, `${id}.log`), line + "\n").catch(() => undefined),
@@ -186,8 +196,8 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   const outputs = await Promise.all(
     run.map((id) =>
       id === GUIDE
-        ? one<GuideOutput>(id, guidePrompt(ctx), guideSchema, input.timeoutMs)
-        : one<ReviewerOutput>(id, reviewerPrompt(id, ctx), reviewerSchema, input.timeoutMs),
+        ? one<GuideOutput>(id, guidePrompt(ctxFor(id)), guideSchema, input.timeoutMs)
+        : one<ReviewerOutput>(id, reviewerPrompt(id, ctxFor(id)), reviewerSchema, input.timeoutMs),
     ),
   );
   if (input.signal?.aborted) throw new HarnessError("cancelled", "Stopped.");

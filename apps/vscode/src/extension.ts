@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 
 import { GUIDE, shortName } from "./agents/defaults.ts";
-import { HARNESS_NAME, harnessVersion, type HarnessConfig, type HarnessId } from "./agents/harness.ts";
-import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, removeAgent, resetSettings, setAgentHarness, settingsDir, settingsFile } from "./agents/settings.ts";
+import { HARNESS_IDS, HARNESS_NAME, harnessVersion, isHarnessId, listPiModels, PI_THINKING, piModelThinking, type HarnessConfig, type HarnessId } from "./agents/harness.ts";
+import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, removeAgent, resetSettings, setAgentHarness, setAgentModel, settingsDir, settingsFile } from "./agents/settings.ts";
 import { Repos } from "./core/repos.ts";
 import { DifflineService, parseKey, type ServiceConfig } from "./core/service.ts";
 import { Store } from "./core/store.ts";
@@ -28,7 +28,9 @@ function readConfig(): ServiceConfig {
     command: c.get<string>(`${id}.path`) || id,
     model: c.get<string>(`${id}.model`) || "",
     extraArgs: c.get<string[]>(`${id}.extraArgs`) || [],
+    ...(id === "pi" ? { thinking: c.get<string>("pi.thinking") || "" } : {}),
   });
+  const defaultHarness = c.get<string>("harness");
   return {
     watch: {
       direct: c.get<boolean>("watch.reviewRequested", true),
@@ -53,7 +55,7 @@ function readConfig(): ServiceConfig {
       autoRunMaxLines: c.get<number>("agents.autoRunMaxLines", 5000),
     },
     sidebar: readSidebar(),
-    harnesses: { default: c.get<string>("harness") === "codex" ? "codex" : "claude", claude: harness("claude"), codex: harness("codex") },
+    harnesses: { default: isHarnessId(defaultHarness) ? defaultHarness : "claude", claude: harness("claude"), codex: harness("codex"), pi: harness("pi") },
   };
 }
 
@@ -139,9 +141,88 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     void vscode.window.showInformationMessage(`Agents are already running on #${key.number} in another VS Code window.`);
   });
 
+  /**
+   * After Pi is picked: its model, from the ones Pi is signed in to, then a thinking level. For the default this sets
+   * diffline.pi.model and diffline.pi.thinking; for one agent, its model in agents.yml with the level as a :suffix.
+   * Falls back to typing the model when Pi can't list them. Returns false when the user backs out.
+   */
+  const choosePiModel = async (agent: { id: AgentId; name: string; model: string } | null): Promise<boolean> => {
+    const pi = readConfig().harnesses.pi;
+    const who = agent ? `the ${shortName(agent.name).toLowerCase()} agent` : "agents on Pi";
+    const shared = `the other Pi agents' model (${pi.model || "Pi's default"})`;
+    const withoutLevel = (m: string) => (piModelThinking(m) ? m.replace(/:[a-z]+$/, "") : m);
+    const current = withoutLevel(agent ? agent.model : pi.model);
+    const models = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: "Listing Pi's models" }, () => listPiModels(pi));
+    let model: string;
+    let canThink = true;
+    if (models === null) {
+      const typed = await vscode.window.showInputBox({
+        title: `Pi model for ${who}`,
+        prompt: `Pi couldn't list its models. Type one as provider/id or a name Pi knows, with an optional :<thinking> suffix. Empty uses ${agent ? shared : "Pi's default"}.`,
+        placeHolder: "anthropic/claude-sonnet-5-5",
+        value: agent ? agent.model : pi.model,
+      });
+      if (typed === undefined) return false;
+      model = typed.trim();
+    } else if (!models.length) {
+      void vscode.window.showWarningMessage("Pi has no models to use yet. Run pi in a terminal and use /login, or set a provider's API key, then choose again.");
+      return false;
+    } else {
+      type Item = vscode.QuickPickItem & { value: string; thinking: boolean };
+      const items: Item[] = [
+        {
+          label: agent ? "Same as the other Pi agents" : "Pi's default",
+          description: [agent ? pi.model || "Pi's default" : "", current ? "" : "in use"].filter(Boolean).join(" · "),
+          detail: agent ? "Uses diffline.pi.model." : "The model you set in Pi, else its first signed-in provider's.",
+          value: "",
+          thinking: true,
+        },
+        ...models.map((m): Item => {
+          const value = `${m.provider}/${m.id}`;
+          return { label: m.id, description: [m.provider, m.thinking ? "" : "no thinking", value === current ? "in use" : ""].filter(Boolean).join(" · "), value, thinking: m.thinking };
+        }),
+      ];
+      const pick = await vscode.window.showQuickPick(items, { title: `Pi model for ${who}`, placeHolder: "Models Pi is signed in to", matchOnDescription: true });
+      if (!pick) return false;
+      model = pick.value;
+      canThink = pick.thinking;
+    }
+    // The level: asked unless the model can't think (Pi turns thinking off for it), already names one, or the agent
+    // shares the other Pi agents' model (and so their level).
+    let thinking = "";
+    if (canThink && !piModelThinking(model) && (model || !agent)) {
+      const now = agent ? piModelThinking(agent.model) || "" : pi.thinking || "";
+      const levels = await vscode.window.showQuickPick(
+        [
+          {
+            label: agent ? "Same as the other Pi agents" : "Pi's default",
+            description: [agent ? pi.thinking || "Pi's default" : "", now ? "" : "in use"].filter(Boolean).join(" · "),
+            detail: agent ? "Uses diffline.pi.thinking." : "The level you set in Pi, else medium.",
+            value: "",
+          },
+          ...PI_THINKING.map((t) => ({ label: t, description: t === now ? "in use" : "", value: t as string })),
+        ],
+        { title: `Thinking for ${who}`, placeHolder: "Pi lowers a level the model doesn't support" },
+      );
+      if (!levels) return false;
+      thinking = levels.value;
+    }
+    if (agent) {
+      const value = model && thinking ? `${model}:${thinking}` : model;
+      await setAgentModel(agent.id, value);
+      log(`${agent.name} now runs on Pi with ${value || `the other Pi agents' model`}`);
+    } else {
+      const c = vscode.workspace.getConfiguration("diffline");
+      await c.update("pi.model", model, vscode.ConfigurationTarget.Global);
+      await c.update("pi.thinking", thinking, vscode.ConfigurationTarget.Global);
+      log(`Pi agents now use ${model || "Pi's default model"}${thinking ? `, thinking ${thinking}` : ""}`);
+    }
+    return true;
+  };
+
   /** The harness picker: the default for every agent, then one row per agent. Stays open for more changes until dismissed. */
   const chooseHarnesses = async () => {
-    const ids: HarnessId[] = ["claude", "codex"];
+    const ids = HARNESS_IDS;
     const versions = new Map(await Promise.all(ids.map(async (id) => [id, await harnessVersion(readConfig().harnesses[id])] as const)));
     const harnessRow = (id: HarnessId, current: boolean) => ({
       label: HARNESS_NAME[id],
@@ -160,10 +241,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
         ...Object.entries(settings.agents).map(([id, a]): Row => {
           const own = a.harness;
           const h = own || cfg.default;
-          const model = a.model || cfg[h].model || "the CLI's default model";
+          const model = a.model || cfg[h].model || (h === "pi" ? "Pi's default model" : "the CLI's default model");
+          // diffline.pi.thinking applies unless the agent's own model names a level.
+          const thinking = h === "pi" && cfg.pi.thinking && !piModelThinking(a.model) ? `, thinking ${cfg.pi.thinking}` : "";
           return {
             label: shortName(a.name),
-            description: `${HARNESS_NAME[h]}${own ? "" : " (default)"} · ${model}${a.enabled ? "" : " · off"}`,
+            description: `${HARNESS_NAME[h]}${own ? "" : " (default)"} · ${model}${thinking}${a.enabled ? "" : " · off"}`,
             detail: id === GUIDE ? "Also writes the briefing's opening line." : undefined,
             agent: id,
           };
@@ -174,6 +257,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
       if (pick.agent === "default") {
         const choice = await vscode.window.showQuickPick(ids.map((id) => harnessRow(id, id === cfg.default)), { title: "Default harness for all agents" });
         if (choice) await vscode.workspace.getConfiguration("diffline").update("harness", choice.value, vscode.ConfigurationTarget.Global);
+        if (choice?.value === "pi") await choosePiModel(null);
         continue;
       }
       const id = pick.agent;
@@ -185,10 +269,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
         ],
         { title: `Harness for the ${shortName(settings.agents[id].name).toLowerCase()} agent` },
       );
-      if (!choice || choice.value === own) continue;
-      const { clearedModel } = await setAgentHarness(id, choice.value);
-      log(`${settings.agents[id].name} now runs on ${choice.value || `the default (${cfg.default})`}`);
-      if (clearedModel) {
+      if (!choice) continue;
+      let clearedModel: string | null = null;
+      if (choice.value !== own) {
+        ({ clearedModel } = await setAgentHarness(id, choice.value));
+        log(`${settings.agents[id].name} now runs on ${choice.value || `the default (${cfg.default})`}`);
+      }
+      // Picking Pi (again) goes on to its model, so the picker is also how a Pi agent's model is changed.
+      const pickedModel = choice.value === "pi" && (await choosePiModel({ id, name: settings.agents[id].name, model: choice.value === own ? settings.agents[id].model : "" }));
+      if (clearedModel && !pickedModel) {
         const now = choice.value || cfg.default;
         void vscode.window.showInformationMessage(
           `The ${shortName(settings.agents[id].name).toLowerCase()} agent's model "${clearedModel}" was for its old harness, so it now uses diffline.${now}.model. Set a model for it in agents.yml if you want another.`,

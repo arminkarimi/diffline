@@ -1,7 +1,7 @@
 // End-to-end check of the agent pipeline without VS Code: load a real pull request, run the agents through the
-// Claude Code CLI (or Codex), validate, and print the agent file summary.
-//   node scripts/e2e-agents.ts owner/name#123 [--clone /path] [--harness claude|codex] [--model sonnet]
-//     [--agents guide,correctness] [--agent-harness guide=codex,correctness=claude]
+// Claude Code CLI (or Codex, or Pi), validate, and print the agent file summary.
+//   node scripts/e2e-agents.ts owner/name#123 [--clone /path] [--harness claude|codex|pi] [--model sonnet]
+//     [--thinking high] [--agents guide,correctness] [--agent-harness guide=codex,correctness=pi]
 
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
@@ -25,11 +25,12 @@ const opt = (name: string) => {
 const key = parseKey(args[0] || "");
 if (!key) throw new Error("Pass a pull request as owner/name#number");
 const clone = opt("clone");
-const harnessId = (opt("harness") || "claude") as "claude" | "codex";
+const harnessId = (opt("harness") || "claude") as "claude" | "codex" | "pi";
 const harnesses = {
   default: harnessId,
   claude: { id: "claude" as const, command: "claude", model: harnessId === "claude" ? opt("model") || "sonnet" : "sonnet", extraArgs: [] },
   codex: { id: "codex" as const, command: "codex", model: harnessId === "codex" ? opt("model") || "" : "", extraArgs: [] },
+  pi: { id: "pi" as const, command: "pi", model: harnessId === "pi" ? opt("model") || "" : "", extraArgs: [], thinking: opt("thinking") || "" },
 };
 const enabled = (opt("agents") || "guide,architecture,correctness,tests,security").split(",") as Array<"guide" | "architecture" | "correctness" | "tests" | "security">;
 
@@ -54,7 +55,7 @@ const service = new DifflineService({
 await ensureSettings();
 const { settings } = await loadSettings();
 for (const pair of (opt("agent-harness") || "").split(",").filter(Boolean)) {
-  const [id, h] = pair.split("=") as [keyof typeof settings.agents, "claude" | "codex"];
+  const [id, h] = pair.split("=") as [keyof typeof settings.agents, "claude" | "codex" | "pi"];
   settings.agents[id].harness = h;
 }
 let t = Date.now();
@@ -88,7 +89,7 @@ const result = await runReview({
   },
 });
 const f = result.file;
-console.log(`\nDone in ${Math.round(result.ms / 1000)}s${result.costUsd !== null ? `, $${result.costUsd.toFixed(2)} (Claude agents)` : ""}${result.tokens ? `, ${formatTokens(result.tokens)}` : ""}`);
+console.log(`\nDone in ${Math.round(result.ms / 1000)}s${result.costUsd !== null ? `, $${result.costUsd.toFixed(2)} (agents that report a cost)` : ""}${result.tokens ? `, ${formatTokens(result.tokens)}` : ""}`);
 if (result.failed.length) console.log(`Failed: ${result.failed.map((x) => `${x.agent} (${x.kind || "failed"}): ${x.error}`).join("; ")}`);
 console.log(`Lede: ${f.lede}`);
 console.log(`Description (${f.description?.kind}): ${f.description?.items.map((i) => `${i.rule}=${i.status}`).join(", ")}`);
