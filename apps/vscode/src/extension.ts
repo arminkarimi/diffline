@@ -55,6 +55,7 @@ function readConfig(): ServiceConfig {
       autoRunMaxLines: c.get<number>("agents.autoRunMaxLines", 5000),
     },
     sidebar: readSidebar(),
+    metrics: { enabled: c.get<boolean>("metrics.enabled", true) },
     harnesses: { default: isHarnessId(defaultHarness) ? defaultHarness : "claude", claude: harness("claude"), codex: harness("codex"), pi: harness("pi") },
   };
 }
@@ -443,6 +444,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     if (ok === "Reset") {
       await resetSettings();
       void vscode.window.showInformationMessage(`Agent settings in ${settingsDir()} are back to the defaults.`);
+    }
+  });
+
+  command("diffline.deleteMetrics", async () => {
+    const ok = await vscode.window.showWarningMessage(
+      "Delete your review metrics? They're the record of what you did with agent findings, the reviews you posted and the agent runs, kept only on this computer. This can't be undone.",
+      { modal: true, detail: service.metricsLog.file },
+      "Delete",
+    );
+    if (ok !== "Delete") return;
+    try {
+      const had = await service.metricsLog.delete();
+      log(had ? `Deleted the review metrics ${service.metricsLog.file}` : "There were no review metrics to delete");
+      void vscode.window.showInformationMessage(had ? "Deleted your review metrics." : "There are no review metrics yet.");
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Couldn't delete the review metrics: ${err instanceof Error ? err.message : err}`);
     }
   });
 

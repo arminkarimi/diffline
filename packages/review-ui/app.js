@@ -46,6 +46,14 @@ let liveSync = "saved", liveSyncError = "", flushTimer = null;
 const api = (method, path, body) => HOST.api(method, path, body);
 const reloadPage = () => HOST.reload();
 
+// What the reviewer does with agent findings, and the reviews they post, go to the extension's local review metrics
+// (when they're turned on there). Only ids, actions, reasons and counts: the extension adds the rest from the agent
+// review it stored.
+function sendMetrics(events) {
+  if (!events.length || typeof HOST.metrics !== "function") return;
+  try { HOST.metrics({ head: D.head && D.head.sha, run: (LIVE.agent && LIVE.agent.ranAt) || null, events }); } catch { /* metrics are best effort */ }
+}
+
 async function flushLiveState() {
   clearTimeout(flushTimer);
   try {
@@ -451,8 +459,18 @@ function findDiffLine(text, preferPath) {
   return deleted;
 }
 
+/* Finding ids come from the agent and the line a finding is on, so a finding that comes back on a later run keeps its
+   id and the decision made on it. Each decision records the run (the agent file's ranAt) it was made on, and decisions
+   for findings that aren't in this run stay saved as history. Ids from before that ("f1", "f2", …) only numbered a
+   run's findings: a decision on one counts only with the run it was made on, which older decisions don't have. */
+const LEGACY_ID = /^f\d+$/;
+const SAVED_FINDINGS = store.read("findings", {}) || {};
+const validDecision = (id, rec) => !!(rec && rec.state) && (!LEGACY_ID.test(id) || (!!rec.run && rec.run === AGENT_RUN_AT));
+
 function placeDraft(d) {
   if (d.replyTo) return d;
+  // A draft from a finding with an old positional id can't be tied to this run's finding.
+  if (d.fromFinding && LEGACY_ID.test(d.fromFinding) && !validDecision(d.fromFinding, SAVED_FINDINGS[d.fromFinding])) d = { ...d, fromFinding: null };
   // What the draft's line should say: its own saved text, or the line its finding points at.
   const finding = d.fromFinding ? FINDINGS.find((x) => x.id === d.fromFinding) : null;
   const expected = String(d.lineText || (finding && finding.match) || "").trim();
@@ -493,7 +511,7 @@ const S = {
   current: null,
   palIdx: 0,
   palList: [],
-  findings: store.read("findings", {}), // finding id -> { state: "accepted" | "dismissed", reason, draft }
+  findings: SAVED_FINDINGS, // finding id -> { state: "accepted" | "dismissed", reason, draft, at, run, title }
   desc: store.read("desc", {}) || {},    // description rule -> { state: "asked" | "skipped", reason, at }
   descSkipping: null,
   brief: prefs.brief !== false,
@@ -528,6 +546,51 @@ function save() {
   store.write("plan", S.plan);
   store.write("planState", S.planState);
   store.write("prefs", { fold: S.fold, split: S.split, banner: S.banner, brief: S.brief, grouping: S.grouping });
+}
+
+/* ---------- Time spent on the review ---------- */
+
+// Time this pull request's page is focused and in use: it counts while the page has focus, up to a minute after the
+// last input. It adds up across reloads (saved in the review state) until a review is posted, then starts again.
+const IDLE_MS = 60_000;
+let activeMs = Math.max(0, Number(store.read("activeMs", 0)) || 0);
+let activeSaved = activeMs;
+let lastInput = Date.now(), lastTick = Date.now(), pageFocused = document.hasFocus();
+
+function tickActive() {
+  const now = Date.now();
+  if (pageFocused && S.view === "pr" && document.visibilityState !== "hidden") {
+    const until = Math.min(now, lastInput + IDLE_MS);
+    if (until > lastTick) activeMs += until - lastTick;
+  }
+  lastTick = now;
+}
+
+function saveActive() {
+  tickActive();
+  // A small write, at most every 30 s while someone's reviewing.
+  if (Math.abs(activeMs - activeSaved) >= 1000) { activeSaved = activeMs; store.write("activeMs", Math.round(activeMs)); }
+}
+
+/** The time spent since the page opened or the last review was posted, which starts the count again. */
+function takeActiveTime() {
+  tickActive();
+  const ms = Math.round(activeMs);
+  activeMs = activeSaved = 0;
+  store.write("activeMs", 0);
+  return ms;
+}
+
+function watchActivity() {
+  const input = () => { tickActive(); lastInput = Date.now(); };
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach((t) => window.addEventListener(t, input, { passive: true, capture: true }));
+  let moved = 0;
+  window.addEventListener("pointermove", () => { const now = Date.now(); if (now - moved > 5000) { moved = now; input(); } }, { passive: true });
+  window.addEventListener("focus", () => { tickActive(); pageFocused = true; lastInput = Date.now(); });
+  window.addEventListener("blur", () => { tickActive(); pageFocused = false; saveActive(); });
+  document.addEventListener("visibilitychange", () => saveActive());
+  window.addEventListener("pagehide", () => saveActive());
+  setInterval(saveActive, 30_000);
 }
 
 /* ---------- Derived review state ---------- */
@@ -596,7 +659,10 @@ const totalMinutes = () => minutesFor(ORDER);
 const readTime = (min) => (min < 90 ? `${min} min` : `${Math.round(min / 60)} hours`);
 const remainingMinutes = () => minutesFor(ORDER.filter((k) => !S.reviewed.has(k)));
 const openThreadCount = () => S.threads.filter((t) => t.state !== "resolved").length;
-const findingState = (x) => (S.findings[x.id] && S.findings[x.id].state) || "open";
+const decisionOf = (id) => (validDecision(id, S.findings[id]) ? S.findings[id] : null);
+const findingState = (x) => { const rec = decisionOf(x.id); return (rec && rec.state) || "open"; };
+// A decision made when an earlier agent run flagged the same line.
+const earlierRun = (rec) => !!(rec && rec.run && AGENT_RUN_AT && rec.run !== AGENT_RUN_AT);
 const findingById = (id) => FIND.find((x) => x.id === id);
 const openFindings = () => FIND.filter((x) => findingState(x) === "open");
 const highOpen = () => FIND.filter((x) => x.severity === "high" && findingState(x) === "open");
@@ -620,8 +686,10 @@ function askDescription(items) {
     else { if (rows.join("").trim()) rows.push(""); rows.push(DESC_ASK_HEAD, "", ...lines); }
     S.pushSummary = rows.join("\n").replace(/^\n+/, "");
   }
+  const fresh = items.filter((it) => descState(it) !== "asked");
   items.forEach((it) => { S.desc[it.rule] = { state: "asked", at: nowISO() }; });
   save();
+  sendMetrics(fresh.map((it) => ({ kind: "description", action: "asked", rule: it.rule })));
 }
 
 // Questions that went out in a posted summary can't be taken back.
@@ -631,6 +699,7 @@ function markDescPosted(text) {
 
 function undoDescription(rule) {
   const it = DESC_ITEMS.find((x) => x.rule === rule);
+  const was = it ? descState(it) : "open";
   if (it && descState(it) === "asked") {
     const rows = S.pushSummary.split("\n").filter((r) => r !== descAskLine(it));
     if (!DESC_GAPS.some((g) => rows.includes(descAskLine(g)))) {
@@ -641,6 +710,7 @@ function undoDescription(rule) {
   }
   delete S.desc[rule];
   save();
+  if (was !== "open") sendMetrics([{ kind: "description", action: "undone", rule, reason: was }]);
 }
 
 /* ---------- Diagrams: the change as boxes and arrows ---------- */
@@ -1770,9 +1840,9 @@ function findingHTML(x) {
   const st = findingState(x);
   const a = AGENT_BY[x.agent];
   if (st !== "open") {
-    const rec = S.findings[x.id] || {};
+    const rec = decisionOf(x.id) || {};
     const pending = rec.draft && S.drafts.some((d) => d.id === rec.draft);
-    const what = st === "accepted" ? (pending ? "Added to your review as a draft" : "Posted in your review") : `Dismissed as “${rec.reason}”`;
+    const what = (st === "accepted" ? (pending ? "Added to your review as a draft" : "Posted in your review") : `Dismissed as “${rec.reason}”`) + (earlierRun(rec) ? " on an earlier run" : "");
     return `<div class="finding is-${st}" id="fd-${x.id}"><div class="finding-sum">${agentAv("sm")}<span class="sev sev-${x.severity}">${SEV[x.severity]}</span>
       <span class="fs-text"><b>${inline(x.title)}</b> · ${esc(what)}</span>${st === "dismissed" || pending ? `<button type="button" class="link" data-act="finding-undo" data-id="${x.id}">Undo</button>` : ""}</div></div>`;
   }
@@ -2353,6 +2423,22 @@ function pushFootHTML() {
     <button type="button" class="btn primary" data-act="push-post">Post to GitHub</button>`;
 }
 
+// A posted review for the review metrics: each finding's draft that went out (with its text, so the extension can tell
+// how much it was reworded; the text isn't logged), each finding of this run still open, and the review itself with
+// the time spent on it.
+function logPosted(drafts, event) {
+  const fromFindings = drafts.filter((d) => d.fromFinding && findingById(d.fromFinding));
+  sendMetrics([
+    ...fromFindings.map((d) => ({ kind: "finding", action: "posted", finding: d.fromFinding, text: d.body, verbatim: !!d.verbatim })),
+    ...openFindings().map((x) => ({ kind: "finding", action: "left-open", finding: x.id })),
+    { kind: "review", action: "submitted", review: {
+      event: { APPROVE: "approve", REQUEST_CHANGES: "changes" }[event] || "comment",
+      own: ownPR(), comments: drafts.length, fromFindings: drafts.filter((d) => d.fromFinding).length,
+      reviewed: S.reviewed.size, hunks: counts().all, agents: !!AG, activeMs: takeActiveTime(),
+    } },
+  ]);
+}
+
 async function previewPush() {
   const p = buildPushPayload();
   const problem = pushProblem(p);
@@ -2382,6 +2468,7 @@ async function postPush() {
     const posted = new Set(review || !p.body.comments.length ? p.meta.commentIds : []);
     const replyResults = results.filter((r) => r.kind === "reply");
     p.meta.replyIds.forEach((id, i) => { if (replyResults[i] && replyResults[i].ok) posted.add(id); });
+    if (review || results.some((r) => r.ok)) logPosted(S.drafts.filter((d) => posted.has(d.id)), p.body.event);
     S.drafts = S.drafts.filter((d) => !posted.has(d.id));
     const resolveResults = results.filter((r) => r.kind === "resolve"), unresolveResults = results.filter((r) => r.kind === "unresolve");
     p.meta.resolve.forEach((id, i) => { if (resolveResults[i] && resolveResults[i].ok) delete S.threadActions[id]; });
@@ -3357,6 +3444,7 @@ function pulse(el) {
 function setHash(h) { try { history.replaceState(null, "", "#" + h); } catch { /* sandboxed frames may refuse */ } }
 
 function setView(view) {
+  tickActive(); // time on the review counts up to here
   S.view = view;
   S.composer = null;
   closeSheet(true);
@@ -3673,7 +3761,9 @@ function submitComposer() {
   } else {
     const id = uid();
     S.drafts.push({ id, f: c.f, k: c.k, lineText: lineText(c.f, c.k), label: c.label, body: text, fromFinding: c.fromFinding || null, verbatim: c.variant === "verbatim" });
-    if (c.fromFinding) S.findings[c.fromFinding] = { state: "accepted", draft: id, at: nowISO() };
+    const x = c.fromFinding ? findingById(c.fromFinding) : null;
+    if (c.fromFinding) S.findings[c.fromFinding] = { state: "accepted", draft: id, at: nowISO(), run: AGENT_RUN_AT, ...(x ? { title: x.title } : {}) };
+    if (x) sendMetrics([{ kind: "finding", action: "added", finding: x.id }]);
   }
   S.composer = null;
   save();
@@ -3726,8 +3816,10 @@ function deleteDraft(id) {
   if (!d) return;
   const t = d.replyTo ? findThread(d.replyTo) : null;
   S.drafts = S.drafts.filter((x) => x.id !== id);
+  const rec = d.fromFinding ? decisionOf(d.fromFinding) : null;
   if (d.fromFinding && S.findings[d.fromFinding]) delete S.findings[d.fromFinding];
   save();
+  if (rec && rec.state === "accepted" && findingById(d.fromFinding)) sendMetrics([{ kind: "finding", action: "undone", finding: d.fromFinding, reason: "added" }]);
   refreshFile(t ? t.f : d.f);
   refreshChrome();
   toast("Draft deleted.");
@@ -3818,7 +3910,7 @@ function copyToClipboard(text, done) {
 function decideFinding(id, record) {
   const x = findingById(id);
   if (!x) return;
-  if (record) S.findings[id] = { ...record, at: record.at || nowISO() };
+  if (record) S.findings[id] = { ...record, at: record.at || nowISO(), run: AGENT_RUN_AT, title: x.title };
   else delete S.findings[id];
   S.dismissing = null;
   save();
@@ -3828,9 +3920,10 @@ function decideFinding(id, record) {
 }
 
 function undoFinding(id) {
-  const rec = S.findings[id];
+  const rec = decisionOf(id);
   if (rec && rec.draft) S.drafts = S.drafts.filter((d) => d.id !== rec.draft);
   decideFinding(id, null);
+  if (rec) sendMetrics([{ kind: "finding", action: "undone", finding: id, reason: rec.state === "accepted" ? "added" : rec.state }]);
   toast("The finding is open again.");
 }
 
@@ -4141,6 +4234,7 @@ const ACTIONS = {
     const x = findingById(el.dataset.id);
     if (!x) return;
     copyToClipboard(verbatimOf(x), "Copied the finding, word for word.");
+    sendMetrics([{ kind: "finding", action: "copied", finding: x.id }]);
   },
   words: (el) => {
     const c = S.composer;
@@ -4171,12 +4265,19 @@ const ACTIONS = {
   },
   "desc-skip-ask": (el) => { S.descSkipping = el.dataset.rule; refreshDesc(el.dataset.rule); },
   "desc-skip-cancel": () => { const r = S.descSkipping; S.descSkipping = null; refreshDesc(r); },
-  "desc-skip": (el) => { S.desc[el.dataset.rule] = { state: "skipped", reason: el.dataset.r, at: nowISO() }; S.descSkipping = null; save(); refreshDesc(el.dataset.rule); },
+  "desc-skip": (el) => {
+    S.desc[el.dataset.rule] = { state: "skipped", reason: el.dataset.r, at: nowISO() };
+    S.descSkipping = null;
+    save();
+    refreshDesc(el.dataset.rule);
+    sendMetrics([{ kind: "description", action: "skipped", rule: el.dataset.rule, reason: el.dataset.r }]);
+  },
   "desc-undo": (el) => { undoDescription(el.dataset.rule); refreshDesc(el.dataset.rule); },
   "finding-dismiss-ask": (el) => { const x = findingById(el.dataset.id); if (x) { S.dismissing = x.id; refreshFile(x.f); } },
   "finding-dismiss-cancel": () => { const x = findingById(S.dismissing); S.dismissing = null; if (x) refreshFile(x.f); },
   "finding-dismiss": (el) => {
     decideFinding(el.dataset.id, { state: "dismissed", reason: el.dataset.r });
+    if (findingById(el.dataset.id)) sendMetrics([{ kind: "finding", action: "dismissed", finding: el.dataset.id, reason: el.dataset.r }]);
     toast(ownPR() ? `Dismissed as “${el.dataset.r}”.` : `Dismissed as “${el.dataset.r}”. ${PEOPLE[PR.author].short} won't see it.`);
   },
   "finding-undo": (el) => undoFinding(el.dataset.id),
@@ -4344,7 +4445,7 @@ function routeFromHash() {
   if (h === "inbox" || (!h && LIVE.startView === "inbox")) S.view = "inbox";
   else if (["changes", "map", "discussion", "workflow"].includes(h)) { S.view = "pr"; S.tab = h; }
 }
-window.addEventListener("hashchange", () => { routeFromHash(); render(); });
+window.addEventListener("hashchange", () => { tickActive(); routeFromHash(); render(); });
 // The VS Code extension's Home: show the list, with a fresh one from the sidebar.
 // "host-view": the sidebar's Home, which shows the list. "host-list": the sidebar's grouping or order changed; an open
 // list redraws in place, and a review keeps the new list for when the reader goes back to it.
@@ -4379,4 +4480,5 @@ document.documentElement.classList.add("in-vscode");
 new MutationObserver(applyHostTheme).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 routeFromHash();
 render();
+watchActivity();
 })();

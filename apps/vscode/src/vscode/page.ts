@@ -40,6 +40,8 @@ export function hostShim(key: string): string {
     reload() { vscode.postMessage({ type: "reload", key }); },
     open(target) { vscode.postMessage({ type: "open", key, target }); },
     runAgents() { vscode.postMessage({ type: "runAgents", key }); },
+    // What the reviewer did with agent findings and the reviews they posted, for the local review metrics: { head, run, events }.
+    metrics(m) { vscode.postMessage({ type: "metrics", key, head: m && m.head, run: m && m.run, events: m && m.events }); },
   };
 })();`;
 }

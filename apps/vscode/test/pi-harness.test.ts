@@ -23,6 +23,8 @@ import {
 } from "../src/agents/harness.ts";
 import { reviewerPrompt } from "../src/agents/prompts.ts";
 import { DEFAULT_SETTINGS } from "../src/agents/defaults.ts";
+import { instructionsHash, runReview, type AgentRunRecord } from "../src/agents/review.ts";
+import { Semaphore } from "../src/core/limit.ts";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-pi.mjs", import.meta.url));
 
@@ -226,4 +228,47 @@ test("listPiModels and harnessVersion read Pi's stderr; the list runs in an empt
   assert.equal(rec.env.GH_TOKEN, undefined);
   assert.deepEqual(await withEnv({ PI_FAKE_MODE: "no-models", PI_FAKE_RECORD: undefined }, () => listPiModels(pi(s.bin))), []);
   assert.equal(await listPiModels(pi(path.join(s.root, "nowhere", "pi"))), null);
+});
+
+test("runReview: each agent's harness, model, thinking, time, tokens, cost and findings go to the run's records", async () => {
+  const s = await setup();
+  const settings = structuredClone(DEFAULT_SETTINGS);
+  for (const a of Object.values(settings.agents)) a.enabled = false;
+  settings.agents.correctness = { ...settings.agents.correctness, enabled: true, harness: "pi", model: "anthropic/claude-sonnet-5-5:high" };
+  settings.agents.security = { ...settings.agents.security, enabled: true, harness: "codex" };
+  const line = (t: " " | "+", text: string, n: number) => [t, t === "+" ? null : n, n, text, 0, 0] as any;
+  const data = {
+    version: 1, generatedAt: "", repo: "acme/web", base: { ref: "main", sha: "b".repeat(40), short: "b" }, head: { ref: "f", sha: "c".repeat(40), short: "c" },
+    mergeBase: "b".repeat(40), since: null, commits: [], workspace: {},
+    files: [{ path: "src/pay.ts", oldPath: null, status: "modified", similarity: null, binary: false, lang: "ts", generated: false, additions: 1, deletions: 0, tests: null,
+      hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, section: "", fresh: false, lines: [line(" ", "export function pay() {", 1), line("+", "  return charge(cents);", 2)] }] }],
+  } as any;
+  const reply = JSON.stringify({
+    findings: [{ severity: "high", confidence: "High confidence", label: "question", path: "src/pay.ts", match: "return charge(cents);", title: "t", body: "b", steps: [], fix: null, comment: "c" }],
+    checked: [],
+  });
+  const agentRuns: AgentRunRecord[] = [];
+  const result = await withEnv({ PI_FAKE_MODE: "ok", PI_FAKE_REPLY: reply, PI_FAKE_RECORD: undefined }, () =>
+    runReview({
+      key: "acme/web#1", repoPath: s.checkout, data, detail: null, settings, enabled: [], runDir: s.runDir, timeoutMs: 20_000, limiter: new Semaphore(2), agentRuns,
+      harnesses: { default: "pi", pi: pi(s.bin, { thinking: "low" }), claude: { id: "claude", command: "claude", model: "", extraArgs: [] }, codex: { id: "codex", command: path.join(s.root, "nowhere", "codex"), model: "", extraArgs: [] } },
+    }),
+  );
+  const byId = Object.fromEntries(agentRuns.map((r) => [r.id, r]));
+  assert.deepEqual(Object.keys(byId).sort(), ["correctness", "lede", "security"]);
+  const c = byId.correctness;
+  assert.equal(c.harness, "pi");
+  assert.equal(c.model, "anthropic/claude-opus-4-7", "the model Pi reported");
+  assert.equal(c.thinking, "high", "the agent's model suffix wins over diffline.pi.thinking");
+  assert.equal(c.instructions, instructionsHash(settings.agents.correctness));
+  assert.equal(c.findings, 1);
+  assert.ok(c.tokens && c.tokens.output > 0);
+  assert.ok(c.costUsd! > 0);
+  assert.equal(c.failed, undefined);
+  assert.equal(byId.security.harness, "codex");
+  assert.equal(byId.security.failed, "missing");
+  assert.equal(byId.security.findings, 0);
+  assert.equal(byId.lede.instructions, null);
+  // The agent file says what each agent ran with.
+  assert.deepEqual(result.file.agents.map((a) => [a.id, a.harness, a.model, a.thinking, a.instructions]), [["correctness", "pi", "anthropic/claude-opus-4-7", "high", instructionsHash(settings.agents.correctness)]]);
 });

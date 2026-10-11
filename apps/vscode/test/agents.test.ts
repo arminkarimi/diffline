@@ -7,8 +7,8 @@ import vm from "node:vm";
 
 import { DEFAULT_SETTINGS } from "../src/agents/defaults.ts";
 import { reviewerSchema, guideSchema } from "../src/agents/schema.ts";
-import { selectAgents } from "../src/agents/review.ts";
-import { AnchorIndex, assemble, guideParts, reviewerFindings, type Problems } from "../src/agents/validate.ts";
+import { instructionsHash, runConfig, selectAgents, type Harnesses } from "../src/agents/review.ts";
+import { AnchorIndex, assemble, assignIds, findingId, guideParts, reviewerFindings, type Problems } from "../src/agents/validate.ts";
 import { computeRisk } from "../src/core/risk.ts";
 import type { DiffLine, ReviewData, RiskInput } from "../src/core/types.ts";
 
@@ -104,10 +104,86 @@ test("guide: chapters cover every file once, quotes must be in the description, 
     findings: [{ severity: "high", confidence: "High confidence", label: "blocking", path: "src/pay.ts", match: "return charge(cents);", title: "t", body: "b", steps: [], fix: "f", comment: "c" }],
     checked: [],
   }, ix, DEFAULT_SETTINGS, problems)], index: ix, settings: DEFAULT_SETTINGS });
-  assert.equal(file.findings[0].id, "f1");
-  assert.deepEqual(file.diagrams![0].nodes[1].findings, ["f1"]);
+  assert.match(file.findings[0].id, /^correctness-[0-9a-f]{8}$/);
+  assert.deepEqual(file.diagrams![0].nodes[1].findings, [file.findings[0].id], "diagram steps pin the stable id");
   assert.equal(file.findings[0].fix?.text, "f");
   assert.equal((file.findings[0] as any).at, undefined);
+});
+
+/** One reviewer finding as an agent reports it. */
+const raw = (title: string, match: string, over: Record<string, unknown> = {}) => ({
+  severity: "high" as const, confidence: "High confidence" as const, label: "question" as const, path: "src/pay.ts", match, title, body: `body of ${title}`, steps: [], fix: null, comment: `comment on ${title}`, ...over,
+});
+
+function fileFrom(byAgent: Record<string, Array<ReturnType<typeof raw>>>, runs?: Parameters<typeof assemble>[0]["runs"]) {
+  const ix = new AnchorIndex(data);
+  const problems: Problems = { dropped: [], repaired: [] };
+  const reviewers = Object.entries(byAgent).map(([agent, findings]) => reviewerFindings(agent, { findings, checked: [] } as any, ix, DEFAULT_SETTINGS, problems));
+  return assemble({ harnessLabel: "Diffline (claude)", head: data.head.sha, lede: "", ran: Object.keys(byAgent), guide: null, reviewers, index: ix, settings: DEFAULT_SETTINGS, runs });
+}
+
+test("finding ids: the same agent on the same line keeps its id whatever the wording", () => {
+  const first = fileFrom({ correctness: [raw("Cents are rounded", "charge(cents)")] });
+  // A later run words it differently and quotes more of the line, with other spacing.
+  const later = fileFrom({ correctness: [raw("Rounding loses a cent", "return   charge(cents);", { severity: "medium", confidence: "Worth asking" })] });
+  assert.equal(first.findings[0].id, later.findings[0].id);
+  assert.match(first.findings[0].id, /^correctness-[0-9a-f]{8}$/);
+  // Another agent on that line, or the same agent on another line, gets another id.
+  const other = fileFrom({ security: [raw("x", "return charge(cents);")], correctness: [raw("y", "const cents")] });
+  assert.notEqual(other.findings.find((f) => f.agent === "security")!.id, first.findings[0].id);
+  assert.notEqual(other.findings.find((f) => f.agent === "correctness")!.id, first.findings[0].id);
+});
+
+test("finding ids: whitespace doesn't matter, collisions get -2 and -3 in order, ids are safe in HTML", () => {
+  assert.equal(findingId("tests", "a.ts", "  if (x  &&\ty) {"), findingId("tests", "a.ts", "if (x && y) {"));
+  assert.notEqual(findingId("tests", "a.ts", "if (x && y) {"), findingId("tests", "b.ts", "if (x && y) {"));
+  const ids = assignIds([
+    { agent: "tests", path: "a.ts", line: "x" },
+    { agent: "tests", path: "a.ts", line: " x " },
+    { agent: "security", path: "a.ts", line: "x" },
+    { agent: "tests", path: "a.ts", line: "x" },
+  ]);
+  assert.equal(ids[1], `${ids[0]}-2`);
+  assert.equal(ids[3], `${ids[0]}-3`);
+  assert.notEqual(ids[2].replace(/^security-/, ""), ids[0]);
+  const file = fileFrom({ correctness: [raw("one", "return charge(cents);"), raw("two", "charge(cents)", { severity: "low" })] });
+  assert.deepEqual(file.findings.map((f) => f.id), [file.findings[0].id, `${file.findings[0].id}-2`]);
+  assert.equal(file.findings[1].title, "two", "the suffix follows the severity order");
+  for (const f of file.findings) assert.match(f.id, /^[a-z][a-z0-9-]*$/);
+});
+
+test("agent file: each agent records the harness, model, thinking and instructions it ran with", () => {
+  const harnesses: Harnesses = {
+    default: "claude",
+    claude: { id: "claude", command: "claude", model: "sonnet", extraArgs: [] },
+    codex: { id: "codex", command: "codex", model: "", extraArgs: [] },
+    pi: { id: "pi", command: "pi", model: "", extraArgs: [], thinking: "low" },
+  };
+  const s = structuredClone(DEFAULT_SETTINGS);
+  // Reported by the harness beats configured.
+  assert.deepEqual(runConfig("correctness", s, harnesses, "claude-sonnet-9"), { harness: "claude", model: "claude-sonnet-9", instructions: instructionsHash(s.agents.correctness) });
+  assert.equal(runConfig("correctness", s, harnesses, null).model, "sonnet");
+  assert.equal(runConfig("correctness", s, { ...harnesses, claude: { ...harnesses.claude, model: "" } }, null).model, null);
+  // Pi: the thinking level from the agent's model suffix, else diffline.pi.thinking; the model without the suffix.
+  s.agents.security.harness = "pi";
+  s.agents.security.model = "openai/gpt-x:high";
+  assert.deepEqual(runConfig("security", s, harnesses, null), { harness: "pi", model: "openai/gpt-x", thinking: "high", instructions: instructionsHash(s.agents.security) });
+  s.agents.security.model = "";
+  assert.equal(runConfig("security", s, harnesses, "openai/gpt-y").thinking, "low");
+  assert.equal(runConfig("security", s, { ...harnesses, pi: { ...harnesses.pi, thinking: "" } }, null).thinking, null);
+  // The hash changes with the instructions or the focus, and is 12 hex.
+  const h = instructionsHash(s.agents.tests);
+  assert.match(h, /^[0-9a-f]{12}$/);
+  assert.notEqual(instructionsHash({ ...s.agents.tests, instructions: s.agents.tests.instructions + "\nAlso check fixtures." }), h);
+  assert.notEqual(instructionsHash({ ...s.agents.tests, focus: "Something else" }), h);
+
+  const file = fileFrom({ correctness: [raw("t", "const cents")] }, { correctness: runConfig("correctness", DEFAULT_SETTINGS, harnesses, null) });
+  assert.deepEqual(
+    { ...file.agents[0], focus: undefined },
+    { id: "correctness", name: DEFAULT_SETTINGS.agents.correctness.name, short: file.agents[0].short, focus: undefined, harness: "claude", model: "sonnet", instructions: instructionsHash(DEFAULT_SETTINGS.agents.correctness) },
+  );
+  // Without run details (as in files from before), AgentInfo is as it was.
+  assert.deepEqual(Object.keys(fileFrom({ correctness: [] }).agents[0]), ["id", "name", "short", "focus"]);
 });
 
 test("schemas are strict: every property required, no extras", () => {

@@ -1,7 +1,9 @@
 // Turns raw agent outputs into a valid agent file: every line anchor must resolve to a non-deleted diff line,
 // chapters cover every file once, description quotes appear in the description, diagram edges join real nodes.
 
-import type { AgentFile, AgentId, Chapter, CheckedNote, DescriptionItem, Diagram, Finding, ReviewData, Ref } from "../core/types.ts";
+import { createHash } from "node:crypto";
+
+import type { AgentFile, AgentId, AgentInfo, Chapter, CheckedNote, DescriptionItem, Diagram, Finding, ReviewData, Ref } from "../core/types.ts";
 import { CONFIDENCE_ORDER, shortName, type ReviewSettings } from "./defaults.ts";
 import type { GuideOutput, ReviewerOutput } from "./schema.ts";
 
@@ -61,6 +63,12 @@ export class AnchorIndex {
       if (first && first.type !== "-") return { path: file, match: full, hunk: loose.hunk, line: loose.line };
     }
     return null;
+  }
+
+  /** The full text of a located line. */
+  lineText(at: Located): string {
+    const hit = this.files.get(at.path)?.find((l) => l.hunk === at.hunk && l.line === at.line);
+    return hit ? hit.text : at.match;
   }
 
   /** Resolve a (path, match) pair, repairing small mistakes. Null when no non-deleted line has the text. */
@@ -261,6 +269,29 @@ export function guideParts(raw: GuideOutput, data: ReviewData, body: string, ind
   return { description, plan: { chapters, reasons: (raw.reasons || []).map((r) => r.trim()).filter(Boolean) }, diagrams, checked };
 }
 
+/**
+ * A finding's id: its agent and a hash of the line it's anchored to (path and the line's text, whitespace collapsed),
+ * so the same agent flagging the same line on a later run gets the same id whatever its wording. Letters, digits and
+ * dashes only: the page puts ids in HTML ids and attributes.
+ */
+export function findingId(agent: AgentId, file: string, lineText: string): string {
+  return `${agent}-${createHash("sha256").update(`${file}\n${squash(lineText)}`).digest("hex").slice(0, 8)}`;
+}
+
+/** Ids for findings in their order; a second finding from the same agent on the same line gets -2, a third -3. */
+export function assignIds(findings: Array<{ agent: AgentId; path: string; line: string }>): string[] {
+  const seen = new Map<string, number>();
+  return findings.map((f) => {
+    const base = findingId(f.agent, f.path, f.line);
+    const n = (seen.get(base) || 0) + 1;
+    seen.set(base, n);
+    return n === 1 ? base : `${base}-${n}`;
+  });
+}
+
+/** What an agent ran with, for AgentInfo: see review.ts runConfig. */
+export type RunConfig = Pick<AgentInfo, "harness" | "model" | "thinking" | "instructions">;
+
 /** Pin each finding to the diagram steps whose refs sit in the same hunk. */
 function pinFindings(diagrams: Diagram[], findings: Array<Finding & { at?: Located }>, index: AnchorIndex) {
   for (const g of diagrams) {
@@ -281,11 +312,14 @@ export function assemble(input: {
   reviewers: Array<ReturnType<typeof reviewerFindings>>;
   index: AnchorIndex;
   settings: ReviewSettings;
+  /** Per agent, the harness, model, thinking level and instructions it ran with. */
+  runs?: Record<AgentId, RunConfig>;
 }): AgentFile {
   const order = Object.keys(input.settings.agents);
   const all = input.reviewers.flatMap((r) => r.findings);
   all.sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity] || order.indexOf(a.agent) - order.indexOf(b.agent));
-  const findings = all.map((f, i) => ({ ...f, id: `f${i + 1}` }));
+  const ids = assignIds(all.map((f) => ({ agent: f.agent, path: f.at.path, line: input.index.lineText(f.at) })));
+  const findings = all.map((f, i) => ({ ...f, id: ids[i] }));
   const diagrams = input.guide?.diagrams || [];
   pinFindings(diagrams, findings, input.index);
   const clean: Finding[] = findings.map(({ at: _at, ...f }) => f);
@@ -297,7 +331,7 @@ export function assemble(input: {
     lede: input.lede,
     agents: input.ran.map((id) => {
       const a = input.settings.agents[id];
-      return { id, name: a.name, short: shortName(a.name), focus: a.focus };
+      return { id, name: a.name, short: shortName(a.name), focus: a.focus, ...(input.runs?.[id] || {}) };
     }),
     ...(input.guide ? { plan: input.guide.plan } : {}),
     findings: clean,

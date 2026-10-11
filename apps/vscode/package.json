@@ -165,6 +165,11 @@
         "command": "diffline.resetAgentSettings",
         "title": "Reset Agent Settings",
         "category": "Diffline"
+      },
+      {
+        "command": "diffline.deleteMetrics",
+        "title": "Delete Review Metrics",
+        "category": "Diffline"
       }
     ],
     "menus": {
@@ -403,6 +408,11 @@
           "default": 20,
           "minimum": 1,
           "markdownDescription": "Stop an agent that runs longer than this many minutes."
+        },
+        "diffline.metrics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Keep review metrics: what you do with agent findings (added to your review, dismissed and why, copied, posted, left open), description checks, the reviews you post (with the time spent on them) and each agent run's cost, tokens and duration. They stay on this computer, in the extension's storage, and hold finding titles but no code, diffs or comment text. **Diffline: Delete Review Metrics** removes them."
         },
         "diffline.watch.reviewRequested": {
           "type": "boolean",

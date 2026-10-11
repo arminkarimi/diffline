@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -11,12 +11,13 @@ import { ensureSampleRepo } from "./fixtures/make-sample-repo.ts";
 
 const SAMPLE = ensureSampleRepo();
 
-function config(over: { pollSeconds?: number } = {}): ServiceConfig {
+function config(over: { pollSeconds?: number; metrics?: boolean } = {}): ServiceConfig {
   return {
     watch: { direct: true, team: false, assigned: false, reviewed: false, codeOwners: false, others: false, authored: true, repositories: [], pollSeconds: over.pollSeconds ?? 60 },
     agents: { autoRun: false, enabled: ["guide"], maxParallel: 1, quietPeriodSeconds: 0, maxAutomaticRuns: 5, skipDrafts: true, timeoutMinutes: 1, autoRunMaxFiles: 100, autoRunMaxLines: 5000 },
     harnesses: { default: "claude", claude: { id: "claude", command: "claude", model: "sonnet", extraArgs: [] }, codex: { id: "codex", command: "codex", model: "", extraArgs: [] }, pi: { id: "pi", command: "pi", model: "", extraArgs: [], thinking: "" } },
     sidebar: { groupBy: "relationship", sortBy: "risk", othersLimit: 10 },
+    ...(over.metrics !== undefined ? { metrics: { enabled: over.metrics } } : {}),
   };
 }
 
@@ -97,5 +98,44 @@ test("loadData: opening a pull request that's being prepared shares its build", 
   const [a, b] = await Promise.all([service.loadData(key, detail), service.loadData(key, detail)]);
   assert.equal(a.data, b.data);
   assert.equal(logs.filter((l) => l.startsWith("Built ")).length, 1, "built once");
+  service.dispose();
+});
+
+test("review metrics: the page's events and every run go to metrics/events.jsonl unless turned off; delete removes it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "diffline-service-"));
+  let on = true;
+  const service = await makeService({ root, config: () => config({ metrics: on }) });
+  const key = { owner: "acme", name: "web", number: 9 };
+  const file = path.join(root, "metrics", "events.jsonl");
+  assert.equal(service.metricsLog.file, file);
+  const review = { kind: "review", action: "submitted", review: { event: "approve", own: false, comments: 0, fromFindings: 0, reviewed: 3, hunks: 3, agents: false, activeMs: 5000 } };
+  await service.metrics(key, { head: "d".repeat(40), run: null, events: [review] });
+  // A run that fails after it started (GitHub doesn't answer) still writes a run event.
+  setGhRunner(async () => ({ code: 1, stdout: "", stderr: "HTTP 502", killed: false }));
+  try {
+    await service.runAgents(key);
+  } finally {
+    setGhRunner(null);
+  }
+  const lines = (await readFile(file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((e) => [e.kind, e.action]), [["review", "submitted"], ["run", "failed"]]);
+  assert.equal(lines[1].trigger, "manual");
+  assert.deepEqual(lines[1].agents, []);
+  assert.equal(lines[1].run, null);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+  on = false;
+  assert.deepEqual(await service.metrics(key, { events: [review] }), []);
+  setGhRunner(async () => ({ code: 1, stdout: "", stderr: "HTTP 502", killed: false }));
+  try {
+    await service.runAgents(key);
+  } finally {
+    setGhRunner(null);
+  }
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 2, "nothing written while turned off");
+
+  assert.equal(await service.metricsLog.delete(), true);
+  await assert.rejects(stat(file));
   service.dispose();
 });

@@ -3,6 +3,7 @@
 //   agents/<slug>.json   the latest agent review for each pull request
 //   cache/<slug>/<head>[-<since>].json   built review data, so reopening a pull request is instant
 //   runs/<slug>/<head>-<time>/            agent prompts, raw outputs and logs, for debugging
+//   metrics/events.jsonl                  review metrics: decisions on findings, reviews posted, agent runs (metrics-log.ts)
 
 import { chmod, copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";

@@ -4,7 +4,7 @@
 import { EventEmitter } from "node:events";
 import path from "node:path";
 
-import { runReview, type Harnesses, type ReviewProgress } from "../agents/review.ts";
+import { runReview, type AgentRunRecord, type Harnesses, type ReviewProgress } from "../agents/review.ts";
 import { formatTokens, HarnessError, type TokenUsage } from "../agents/harness.ts";
 import { loadSettings } from "../agents/settings.ts";
 import type { AgentId, AgentFile, ListItem, LiveData, PrKey, PullRequestDetail, PullRequestSummary, PushPayload, ReviewData, Risk, RiskInput } from "./types.ts";
@@ -19,6 +19,7 @@ import { Locks } from "./locks.ts";
 import type { Repos } from "./repos.ts";
 import { computeRisk } from "./risk.ts";
 import type { Store } from "./store.ts";
+import { MetricsLog, type MetricsEvent, type PageMetrics } from "./metrics-log.ts";
 
 export interface ServiceConfig {
   watch: {
@@ -39,6 +40,8 @@ export interface ServiceConfig {
   harnesses: Harnesses;
   /** How the sidebar and the page's list group and sort pull requests. */
   sidebar: SidebarConfig;
+  /** diffline.metrics.enabled: keep the local review metrics log. Missing means on. */
+  metrics?: { enabled: boolean };
 }
 
 /** A small key-value store that survives restarts (VS Code's globalState). */
@@ -122,6 +125,16 @@ const runLock = (key: PrKey) => `run-${prSlug(key)}`;
 /** What the list keeps of an agent review. */
 const agentSummary = (a: AgentFile | null): PrRecord["agent"] =>
   a ? { commit: a.commit, ranAt: a.ranAt, findings: a.findings.map((f) => ({ id: f.id, severity: f.severity })), description: a.description || null } : null;
+/**
+ * Whether the saved state decided a finding. Positional ids from before ids were stable ("f1", "f2", …) count only
+ * when the decision names the run it was made on, which older decisions don't.
+ */
+export function decided(state: { findings?: Record<string, { state?: string; run?: string }> } | null, id: string, ranAt: string | undefined): boolean {
+  const d = state?.findings?.[id];
+  if (!d || !d.state) return false;
+  return !/^f\d+$/.test(id) || (!!d.run && d.run === ranAt);
+}
+
 const keyOf = (s: PullRequestSummary): PrKey => {
   const [owner, name] = s.repo.split("/");
   return { owner, name, number: s.number };
@@ -167,6 +180,8 @@ export class DifflineService extends EventEmitter {
   private warming = false;
   /** Diffs being built, by pull request, head and since, so opening one that's being prepared waits for that build. */
   private readonly building = new Map<string, Promise<ReviewData>>();
+  /** The review metrics log (metrics-log.ts). */
+  readonly metricsLog: MetricsLog;
 
   constructor(opts: { store: Store; repos: Repos; memory: Memory; config: () => ServiceConfig; log: (line: string) => void }) {
     super();
@@ -177,6 +192,7 @@ export class DifflineService extends EventEmitter {
     this.log = opts.log;
     this.limiter = new Semaphore(this.config().agents.maxParallel);
     this.locks = new Locks(path.join(this.store.root, "locks"));
+    this.metricsLog = new MetricsLog(path.join(this.store.root, "metrics"), { enabled: () => this.config().metrics?.enabled !== false, log: this.log });
     // Show the last known list right away; the first refresh replaces it.
     for (const s of this.memory.get<PullRequestSummary[]>("lastList", [])) {
       const key = keyOf(s);
@@ -609,12 +625,12 @@ export class DifflineService extends EventEmitter {
 
   /* ---------- The list, as the page and the sidebar show it ---------- */
 
-  riskInput(r: PrRecord, state: { findings?: Record<string, { state?: string }> } | null): RiskInput {
-    const decided = state?.findings || {};
+  riskInput(r: PrRecord, state: { findings?: Record<string, { state?: string; run?: string }> } | null): RiskInput {
+    const decisions = state?.findings || {};
     const files = r.builtHead && r.builtHead === r.summary?.headRefOid ? r.builtFiles! : r.builtFiles && !r.summary ? r.builtFiles : (r.summary?.files || []).map((f) => ({ ...f, generated: isGenerated(f.path), tests: null }));
     return {
       files,
-      findings: (r.agent?.findings || []).map((f) => ({ severity: f.severity, state: decided[f.id]?.state || "open" })),
+      findings: (r.agent?.findings || []).map((f) => ({ severity: f.severity, state: decided(state, f.id, r.agent?.ranAt) ? decisions[f.id].state! : "open" })),
       checks: r.summary?.checks || { total: 0, failed: 0, running: 0 },
     };
   }
@@ -649,7 +665,7 @@ export class DifflineService extends EventEmitter {
       rows.map(async (r): Promise<ListItem> => {
         const s = r.summary;
         const state = await this.store.readState(r.key);
-        const decided = state?.findings || {};
+        const open = (f: { id: string }) => !decided(state, f.id, r.agent?.ranAt);
         const isCurrent = current && sameKey(r.key, current);
         const pr = isCurrent && currentDetail ? currentDetail.pr : null;
         const desc = r.agent?.description;
@@ -678,8 +694,8 @@ export class DifflineService extends EventEmitter {
           agent: r.agent
             ? {
                 findings: r.agent.findings.length,
-                openHigh: r.agent.findings.filter((f) => f.severity === "high" && !decided[f.id]).length,
-                open: r.agent.findings.filter((f) => !decided[f.id]).length,
+                openHigh: r.agent.findings.filter((f) => f.severity === "high" && open(f)).length,
+                open: r.agent.findings.filter(open).length,
               }
             : null,
           description: desc ? { kind: desc.kind, gaps: desc.items.filter((it) => it.status === "partly" || it.status === "missing").length, rules: desc.items.length } : null,
@@ -724,6 +740,11 @@ export class DifflineService extends EventEmitter {
       return { ok: true, head: data.head.sha };
     }
     throw new Error(`Not found: ${method} ${apiPath}`);
+  }
+
+  /** A metrics message from the page: what the reviewer did with agent findings, and reviews posted. */
+  metrics(key: PrKey, msg: PageMetrics): Promise<MetricsEvent[]> {
+    return this.metricsLog.record(key, msg, () => this.store.readAgent(key));
   }
 
   /* ---------- Agents ---------- */
@@ -780,6 +801,11 @@ export class DifflineService extends EventEmitter {
     const cfg = this.config();
     let locked = false;
     let tree: { path: string; remove: () => Promise<void> } | null = null;
+    // A run event goes to the review metrics for every run that got past the checks, however it ends.
+    let started = false;
+    const agentRuns: AgentRunRecord[] = [];
+    let ranAt: string | null = null;
+    const startedAt = Date.now();
     try {
       // Another window may be running this pull request already.
       const lock = await this.locks.acquire(runLock(key), { head: r.summary?.headRefOid }).catch((err) => {
@@ -791,6 +817,7 @@ export class DifflineService extends EventEmitter {
         return;
       }
       locked = true;
+      started = true;
       const { data, detail, clonePath } = await this.loadData(key, await this.detail(key));
       if (ctrl.signal.aborted) throw new HarnessError("cancelled", "Stopped.");
       r.run.head = data.head.sha;
@@ -799,6 +826,7 @@ export class DifflineService extends EventEmitter {
         await this.loadAgentSummary(r);
         if (r.agent?.commit === data.head.sha) {
           r.run = { state: "idle" };
+          started = false; // nothing ran
           return;
         }
         const counts = { ...this.memory.get<Record<string, number>>("autoRuns", {}) };
@@ -838,7 +866,9 @@ export class DifflineService extends EventEmitter {
           r.run.progress = p;
           this.changed();
         },
+        agentRuns,
       });
+      ranAt = result.file.ranAt;
       await this.store.writeAgent(key, result.file);
       await this.loadAgentSummary(r);
       r.run = { ...r.run, state: "done", finishedAt: Date.now(), costUsd: result.costUsd, tokens: result.tokens, error: result.failed.length ? result.failed.map((f) => `${f.agent}: ${f.error}`).join("; ") : undefined };
@@ -854,6 +884,19 @@ export class DifflineService extends EventEmitter {
       this.log(`Agents ${cancelled ? "stopped" : "failed"} on ${prKeyString(key)}${cancelled ? "" : `: ${message}`}`);
       if (!cancelled) this.emit("runFailed", key, message, err instanceof HarnessError ? err.kind : "failed");
     } finally {
+      if (started) {
+        const state = r.run.state;
+        await this.metricsLog
+          .recordRun(key, {
+            head: r.run.head || r.summary?.headRefOid || null,
+            run: ranAt,
+            action: state === "done" ? "finished" : state === "cancelled" ? "cancelled" : "failed",
+            trigger: opts.automatic ? "auto" : "manual",
+            ms: Date.now() - startedAt,
+            agents: agentRuns,
+          })
+          .catch((err) => this.log(`Couldn't write to the review metrics: ${err instanceof Error ? err.message : err}`));
+      }
       this.controllers.delete(prKeyString(key).toLowerCase());
       if (tree) await tree.remove().catch((err) => this.log(`Couldn't remove the agents' checkout ${tree?.path}: ${err instanceof Error ? err.message : err}`));
       if (locked) await this.locks.release(runLock(key)).catch(() => undefined);

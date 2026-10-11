@@ -160,6 +160,9 @@ export class ReviewPanel {
       } catch (err) {
         void this.panel?.webview.postMessage({ type: "api-result", id: m.id, ok: false, error: err instanceof Error ? err.message : String(err) });
       }
+    } else if (m.type === "metrics") {
+      // Taken in the order the page sent them; the log keeps that order.
+      void this.service.metrics(key, m).catch((err) => this.log(`Couldn't write to the review metrics: ${err instanceof Error ? err.message : err}`));
     } else if (m.type === "runAgents") {
       // Through the command, so a run on an unchanged pull request asks first, as it does from the sidebar.
       void vscode.commands.executeCommand("diffline.runAgents", prKeyString(key));

@@ -1,16 +1,17 @@
 // Runs the review agents on one pull request and returns the agent file the page renders.
 
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { AgentFile, AgentId, PullRequestDetail, ReviewData } from "../core/types.ts";
 import type { Semaphore } from "../core/limit.ts";
-import { DESC_RULES, GUIDE, type ReviewSettings } from "./defaults.ts";
+import { DESC_RULES, GUIDE, type AgentSettings, type ReviewSettings } from "./defaults.ts";
 import { addTokens, formatTokens, HarnessError, piModelThinking, runAgent, type HarnessConfig, type HarnessId, type TokenUsage } from "./harness.ts";
 import { guidePrompt, INLINE_DIFF_LIMIT, ledePrompt, renderDiff, reviewerPrompt, type PromptContext } from "./prompts.ts";
 import { guideSchema, ledeSchema, reviewerSchema, type GuideOutput, type ReviewerOutput } from "./schema.ts";
 import { matchesAny } from "./settings.ts";
-import { AnchorIndex, assemble, guideParts, reviewerFindings, type Problems } from "./validate.ts";
+import { AnchorIndex, assemble, guideParts, reviewerFindings, type Problems, type RunConfig } from "./validate.ts";
 
 export type AgentState = "queued" | "running" | "done" | "failed" | "skipped" | "cancelled";
 
@@ -30,6 +31,45 @@ export interface Harnesses {
 export function harnessFor(id: AgentId | "lede", settings: ReviewSettings, harnesses: Harnesses): HarnessConfig {
   const own = settings.agents[id === "lede" ? GUIDE : id]?.harness;
   return harnesses[own || harnesses.default];
+}
+
+/** A short hash of what an agent is told (its focus and instructions), so a change shows in the review metrics. */
+export const instructionsHash = (a: Pick<AgentSettings, "focus" | "instructions">): string =>
+  createHash("sha256").update(`${a.focus}\n${a.instructions}`).digest("hex").slice(0, 12);
+
+/**
+ * What an agent ran with, for the agent file: its harness, the model the harness reported (else the configured one),
+ * Pi's thinking level and its instructions' hash.
+ */
+export function runConfig(id: AgentId, settings: ReviewSettings, harnesses: Harnesses, reportedModel: string | null): RunConfig {
+  const h = harnessFor(id, settings, harnesses);
+  const own = settings.agents[id === "lede" ? GUIDE : id].model;
+  const configured = own || h.model || "";
+  const suffix = h.id === "pi" ? piModelThinking(configured) : null;
+  const model = reportedModel || (suffix ? configured.replace(/:[a-z]+$/, "") : configured) || null;
+  return {
+    harness: h.id,
+    model,
+    // Pi's diffline.pi.thinking applies unless the agent's own model names a level (see piArgs).
+    ...(h.id === "pi" ? { thinking: (own && piModelThinking(own)) || h.thinking || suffix || null } : {}),
+    instructions: instructionsHash(settings.agents[id === "lede" ? GUIDE : id]),
+  };
+}
+
+/** How one agent's part of a run went, for the run event in the review metrics. The lede is an agent here too. */
+export interface AgentRunRecord {
+  id: string;
+  harness: string;
+  model: string | null;
+  thinking?: string | null;
+  /** The lede's instructions are Diffline's own, so it has none. */
+  instructions: string | null;
+  ms: number;
+  tokens: TokenUsage | null;
+  costUsd: number | null;
+  /** Findings it has in the agent file. */
+  findings: number;
+  failed?: HarnessError["kind"];
 }
 
 export interface AgentFailure {
@@ -56,6 +96,8 @@ export interface ReviewRunInput {
   limiter: Semaphore;
   signal?: AbortSignal;
   onProgress?: (p: ReviewProgress) => void;
+  /** Filled in as agents finish or fail, whether or not the run as a whole succeeds (for the review metrics). */
+  agentRuns?: AgentRunRecord[];
 }
 
 export interface ReviewRunResult {
@@ -150,11 +192,21 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   let tokens: TokenUsage | null = null;
   const usage: Record<string, { harness: HarnessId; model: string | null; ms: number; costUsd: number | null; tokens: TokenUsage | null }> = {};
 
+  const records = new Map<string, AgentRunRecord>();
+  const record = (id: AgentId | "lede", reportedModel: string | null, rest: Pick<AgentRunRecord, "ms" | "tokens" | "costUsd"> & { failed?: AgentRunRecord["failed"] }) => {
+    const cfg = runConfig(id, input.settings, input.harnesses, reportedModel);
+    const r: AgentRunRecord = { id, ...cfg, instructions: id === "lede" ? null : cfg.instructions!, ...rest, findings: 0 } as AgentRunRecord;
+    records.set(id, r);
+    input.agentRuns?.push(r);
+  };
+
   const one = async <T>(id: AgentId | "lede", prompt: string, schema: object, timeoutMs: number): Promise<T | null> => {
     const harness = harnessOf(id);
     const model = input.settings.agents[id === "lede" ? GUIDE : id].model;
+    let agentStarted = 0;
     try {
       return await input.limiter.use(async () => {
+        agentStarted = Date.now();
         progress.agents[id] = { state: "running", harness: harness.id };
         emit();
         await writeFile(path.join(input.runDir, `${id}.prompt.md`), prompt, "utf8");
@@ -173,6 +225,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
         if (res.costUsd !== null) cost = (cost ?? 0) + res.costUsd;
         tokens = addTokens(tokens, res.tokens);
         usage[id] = { harness: harness.id, model: res.model, ms: res.durationMs, costUsd: res.costUsd, tokens: res.tokens };
+        record(id, res.model, { ms: res.durationMs, tokens: res.tokens, costUsd: res.costUsd });
         progress.agents[id] = { state: "done", harness: harness.id, ms: res.durationMs, costUsd: res.costUsd, tokens: res.tokens };
         emit();
         void log(
@@ -188,6 +241,7 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
       emit();
       // A missing or signed-out CLI fails only the agents that use it; the others carry on.
       if (!cancelled) failed.push({ agent: id, error: message, kind: err instanceof HarnessError ? err.kind : undefined });
+      record(id, null, { ms: agentStarted ? Date.now() - agentStarted : 0, tokens: null, costUsd: null, failed: cancelled ? "cancelled" : err instanceof HarnessError ? err.kind : "failed" });
       void log(`${id} ${cancelled ? "cancelled" : "failed"} on ${harness.id}: ${message}${err instanceof HarnessError && err.detail ? `\n${err.detail}` : ""}`);
       return null;
     }
@@ -216,6 +270,8 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
       ran.push(id);
     } catch (err: any) {
       failed.push({ agent: id, error: `Its output didn't fit: ${err?.message || err}` });
+      const r = records.get(id);
+      if (r) r.failed = "badOutput";
       progress.agents[id] = { state: "failed", error: "Its output didn't fit the expected shape" };
     }
   });
@@ -227,7 +283,10 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   }
 
   const used = [...new Set(ran.map((id) => harnessOf(id).id))];
-  const draft = assemble({ harnessLabel: `Diffline (${used.join(" + ")})`, head: input.data.head.sha, lede: "", ran, guide, reviewers, index, settings: input.settings });
+  const runs = Object.fromEntries(ran.map((id) => [id, runConfig(id, input.settings, input.harnesses, usage[id]?.model ?? null)]));
+  const draft = assemble({ harnessLabel: `Diffline (${used.join(" + ")})`, head: input.data.head.sha, lede: "", ran, guide, reviewers, index, settings: input.settings, runs });
+
+  for (const r of records.values()) r.findings = draft.findings.filter((f) => f.agent === r.id).length;
 
   // The opening line of the briefing, written once every finding is known.
   let lede = fallbackLede(draft);

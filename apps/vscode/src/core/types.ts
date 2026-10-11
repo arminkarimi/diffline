@@ -183,6 +183,14 @@ export interface AgentInfo {
   name: string;
   short: string;
   focus: string;
+  /** What the agent ran with. Agent files from before these were recorded don't have them. */
+  harness?: string;
+  /** The model the harness reported, else the configured one; null when neither is known. */
+  model?: string | null;
+  /** Pi only: the thinking level, null for Pi's default. */
+  thinking?: string | null;
+  /** The first 12 hex of a SHA-256 of the agent's focus and instructions, so a change of instructions shows later. */
+  instructions?: string;
 }
 
 export interface Ref {
@@ -199,6 +207,7 @@ export interface FindingStep {
 }
 
 export interface Finding {
+  /** "<agent>-<8 hex>" from the agent and the line it's on, stable across runs (validate.ts findingId). Older files: "f1", "f2", …. */
   id: string;
   agent: string;
   severity: "high" | "medium" | "low";
@@ -277,7 +286,8 @@ export interface AgentFile {
 export type ReviewState = Record<string, unknown> & {
   drafts?: unknown[];
   reviewedIds?: string[];
-  findings?: Record<string, { state?: string }>;
+  /** Finding id → the decision; `run` is the agent file's ranAt it was made on (missing on older decisions). */
+  findings?: Record<string, { state?: string; run?: string; title?: string }>;
 };
 
 /* ---------- The page's live data (window.DIFFLINE_LIVE) ---------- */

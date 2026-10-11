@@ -135,3 +135,41 @@ test("ReviewPanel: a new grouping or order reaches an open page without opening 
   assert.equal(sent[0].groups[0].keys.length, 2);
   panel.dispose();
 });
+
+test("ReviewPanel: the page's metrics reach the log through the extension, in the order they were sent", async () => {
+  const { MetricsLog } = await import("../src/core/metrics-log.ts");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "diffline-panel-metrics-"));
+  const log = new MetricsLog(dir, { enabled: () => true });
+  const agent = {
+    version: 1, agent: "Diffline (claude)", ranAt: "2026-10-11T09:00:00.000Z", commit: "c".repeat(40), lede: "", checked: [],
+    agents: [{ id: "tests", name: "Tests agent", short: "Tests", focus: "f", harness: "claude", model: "sonnet", instructions: "0123456789ab" }],
+    findings: [{ id: "tests-1a2b3c4d", agent: "tests", severity: "medium", confidence: "Worth asking", label: "question", path: "a.ts", match: "x", title: "No test for x", body: "b", comment: "c" }],
+  };
+  const seen: Array<{ key: string; type: string }> = [];
+  const { service } = fakeService(async (key) => review(key));
+  // Slow agent-file reads: a later message mustn't overtake an earlier one.
+  let delay = 20;
+  (service as any).metrics = (key: Key, m: any) => {
+    seen.push({ key: prKeyString(key), type: m.type });
+    const wait = (delay -= 5);
+    return log.record(key, m, () => new Promise((r) => setTimeout(() => r(agent as any), Math.max(0, wait))));
+  };
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, () => undefined);
+  await panel.show(A);
+  const webview = fake.created.at(-1)!.webview;
+  const page = runPage(webview.html);
+  const before = page.sent.length;
+  page.host.metrics({ head: "c".repeat(40), run: agent.ranAt, events: [{ kind: "finding", action: "added", finding: "tests-1a2b3c4d" }] });
+  page.host.metrics({ head: "c".repeat(40), run: agent.ranAt, events: [{ kind: "finding", action: "undone", finding: "tests-1a2b3c4d", reason: "added" }] });
+  page.host.metrics({ head: "c".repeat(40), run: agent.ranAt, events: [{ kind: "finding", action: "dismissed", finding: "tests-1a2b3c4d", reason: "Intended" }] });
+  for (const m of page.sent.slice(before)) webview.receive(m);
+  assert.deepEqual(page.sent.slice(before).map((m) => m.type), ["metrics", "metrics", "metrics"]);
+  assert.deepEqual(seen, [{ key: "o/r#1", type: "metrics" }, { key: "o/r#1", type: "metrics" }, { key: "o/r#1", type: "metrics" }]);
+  await new Promise((r) => setTimeout(r, 60));
+  const { readFile } = await import("node:fs/promises");
+  const lines = (await readFile(log.file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((e) => e.action), ["added", "undone", "dismissed"]);
+  assert.equal(lines[0].pr, "o/r#1");
+  assert.deepEqual(lines[0].agent, { id: "tests", harness: "claude", model: "sonnet", instructions: "0123456789ab" });
+  panel.dispose();
+});
