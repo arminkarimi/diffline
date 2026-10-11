@@ -14,6 +14,7 @@ What Diffline does today, in the VS Code extension. Settings and setup are in th
 - [The sidebar and Home](#the-sidebar-and-home)
 - [Automatic runs](#automatic-runs)
 - [Posting to GitHub](#posting-to-github)
+- [Review metrics](#review-metrics)
 - [Keyboard](#keyboard)
 
 ## Read changes in order
@@ -48,6 +49,8 @@ Each **finding** sits inline on the line it's about. It has a severity (high, me
 - **Add to my review.** The draft comment starts reworded in a reviewer's voice. Switch it to **As written** to post the agent's words unchanged, or edit it.
 - **Copy.** Takes the finding's exact text, to paste anywhere.
 - **Dismiss**, with a reason: not a problem, intended, or out of scope.
+
+Decisions stay with their finding when the agents run again. A finding's id comes from its agent and the line it's on, so when the same agent flags the same line on a later run, the decision you made is still there, marked "on an earlier run". Decisions on findings that don't come back are kept, but not shown.
 
 Agents never approve or block, and the author only sees what you post. Approve stays unavailable until every high finding has a decision.
 
@@ -152,6 +155,18 @@ The review is posted on the commit the page was built from, so comments land on 
 Before posting, Diffline refuses a review that contains what looks like a private key, token or password.
 
 Not supported yet: comments that span several lines, file-level comments, and editing or deleting posted comments.
+
+## Review metrics
+
+**Diffline: Show Review Metrics**, or **Review metrics** on Home, shows how your reviews and the agents are going, for the last 7, 30 or 90 days, or all time:
+
+- **Your reviews.** Reviews per week, by decision. The time the page was in use per review, how much of each diff you marked reviewed, how many reviews were later rounds or followed a new push, and your own comments next to those that came from agent findings.
+- **Agent findings.** For each agent, the share of its findings you used (added to your review, posted or copied), dismissed, or left open when you posted a review. Dismissals show their most common reason. An agent with fewer than 10 decided findings says "too few to tell". Below that: severity by confidence, how much you reworded findings before posting, the description rules you asked about or skipped and why, how an agent did before and after its instructions or model changed, and each finding with its outcome.
+- **Agent runs.** Failures, duration, tokens and cost, and cost per useful finding, for automatic and manual runs.
+
+The agent tables can be grouped by agent, harness, model or Pi's thinking level, so you can compare one setup with another. **Export CSV** saves one row per finding and its outcome; **Export JSON** saves the raw events.
+
+The numbers come from a log the extension keeps on your computer, in its global storage: one line per thing you did with a finding or description rule, per review you posted, and per agent run. It holds finding titles, but no code, diffs or comment text, and it's never sent anywhere. It's on by default. `diffline.metrics.enabled` turns it off, and **Diffline: Delete Review Metrics** deletes it. The [architecture notes](architecture.md#review-metrics) describe its format.
 
 ## Keyboard
 

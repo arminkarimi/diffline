@@ -12,6 +12,8 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 │ Sidebar     │◄─────────────│   ├─ Repos (core/repos.ts)            │
 │ (tree view) │              │   ├─ Store (core/store.ts)            │
 └─────────────┘              │   ├─ Locks (core/locks.ts)            │
+                             │   ├─ MetricsLog (core/metrics-log.ts)─┼───► metrics/events.jsonl
+                             │   ├─ metrics report (core/metrics.ts) │     (global storage)
                              │   └─ runReview (agents/review.ts) ────┼───► claude / codex / pi
                              └───────────────────────────────────────┘
 ```
@@ -21,7 +23,7 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 | Folder | What's in it |
 | --- | --- |
 | `src/extension.ts` | Activation: wires the pieces together, registers commands, reads settings. |
-| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping. Testable with plain Node. |
+| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping, review metrics. Testable with plain Node. |
 | `src/agents/` | Agent settings, prompts, output schemas, the harnesses, running a review, and validating its output. |
 | `src/vscode/` | The VS Code surfaces: the review panel, the page builder, the sidebar tree. |
 | `test/` | Unit tests (`node --test`). `fake-vscode.ts` stands in for the `vscode` module. |
@@ -86,7 +88,7 @@ A scheduled run waits until the quiet period after the head was first seen has p
 3. Loads the agent settings.
 4. Makes a run folder (`Store.newRunDir`), a checkout of the head (`Repos.reviewTree`), and a copy of the changed files as they were at the merge base (`Repos.exportFiles`, into `<run>/base`).
 5. Calls `runReview()` and saves the result as the pull request's agent file.
-6. Always removes the checkout and releases the lock, even when the run fails or is stopped.
+6. Always writes a run event to the [review metrics](#review-metrics), removes the checkout and releases the lock, even when the run fails or is stopped.
 
 **Stop** aborts the run's `AbortController`, which kills the agent processes.
 
@@ -174,6 +176,7 @@ All three get a minimal environment (`agentEnv()` in `src/core/exec.ts`): what t
 - Chapters cover every changed file once. Files the guide left out go into a last chapter.
 - Description quotes must appear in the description, and the description check has one item per rule.
 - Diagram edges must join real nodes.
+- Findings are sorted by severity, then agent order, and get [ids that survive a re-run](#finding-ids).
 
 ## The review page
 
@@ -189,7 +192,7 @@ The page is `packages/review-ui` (`index.html`, `app.js`, `styles.css`), plain H
 
 ### Host bridge
 
-The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target)` and `runAgents()`. Each becomes a message that names the pull request the page was built for, so a save sent while another pull request loads still goes to its own. Request ids are unique per page, so a late answer can't settle a request from a newer page.
+The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target)`, `runAgents()`, and for the [review metrics](#review-metrics) `metrics(m)`, `metricsReport(o)` and `metricsExport(o)`. Each becomes a message that names the pull request the page was built for, so a save sent while another pull request loads still goes to its own. Request ids are unique per page, so a late answer can't settle a request from a newer page.
 
 | Message from the page | What the extension does |
 | --- | --- |
@@ -200,12 +203,106 @@ The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target
 | `reload` | Reloads the page, if it's still the current one. |
 | `open` | Opens another pull request in the panel. |
 | `runAgents` | Runs the `diffline.runAgents` command, so it asks first when nothing changed. |
+| `metrics` | Appends what the reviewer did to the review metrics log (`DifflineService.metrics`). No answer. |
+| `metricsReport` | Returns the report for a period and grouping (`DifflineService.metricsReport`). |
+| `metricsExport` | Writes the period's events as JSON or finding outcomes as CSV where the reviewer picks, through a save dialog. |
 
-The extension answers `api` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups.
+The extension answers `api`, `metricsReport` and `metricsExport` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics.
 
 ### Sidebar
 
 `src/vscode/tree.ts` draws the sidebar from the service's records. `src/core/grouping.ts` groups and sorts them, and the page's list uses the same groups. `src/core/risk.ts` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together.
+
+## Review metrics
+
+The extension keeps a log of what the reviewer does with agent findings and description checks, each review they post, and each agent run, and adds it up into a report (**Diffline: Show Review Metrics**). The log is on by default (`diffline.metrics.enabled`), stays in the extension's global storage, and is never sent anywhere. It holds no code, diff, finding body or comment text: a finding's title is the one text field.
+
+```
+ Review page (webview)                          Extension host (Node)
+┌──────────────────────────────┐
+│ Add to my review, Dismiss,   │ DIFFLINE_HOST.metrics    ┌──────────────────────────────┐
+│ Copy, Undo, Ask, Skip,       ├─────────────────────────►│ ReviewPanel (vscode/panel.ts)│
+│ Post now                     │ { head, run, events }    └──────────────┬───────────────┘
+└──────────────────────────────┘                                         ▼
+                                                          ┌──────────────────────────────┐
+                                                          │ DifflineService.metrics()    │
+                                                          └──────────────┬───────────────┘
+                                                                         ▼
+ agents/<slug>.json ── finding, agent and rule details ─► ┌──────────────────────────────┐
+                                                          │ MetricsLog                   │
+ runAgents(), however the run ends ── recordRun() ──────► │ (core/metrics-log.ts)        │
+                                                          │ checks and enriches events,  │
+                                                          │ sets round and newPush,      │
+                                                          │ appends in arrival order     │
+                                                          └──────────────┬───────────────┘
+                                                                         ▼
+                                                            metrics/events.jsonl (0600)
+                                                                         │ read
+                                                                         ▼
+┌──────────────────────────────┐ metricsReport            ┌──────────────────────────────┐
+│ #metrics page                ├─────────────────────────►│ parseEvents(), aggregate()   │
+│ (Show Review Metrics,        │◄─────────────────────────┤ (core/metrics.ts)            │
+│ or Review metrics on Home)   │ report                   └──────────────────────────────┘
+│                              │ metricsExport
+│ Export CSV / Export JSON     ├────────────────────────► exportText() ──► save dialog
+└──────────────────────────────┘
+```
+
+### Finding ids
+
+A decision has to stay with its finding when the agents run again, so ids come from what a finding is about, not its place in the list. `findingId()` in `src/agents/validate.ts` makes `<agent>-<hash>`: the first 8 hex digits of a SHA-256 of the file's path, a newline, and the full text of the diff line the finding is anchored to, with whitespace collapsed. It hashes the anchored line, not the agent's `match`, which can quote more or less of the line from one run to the next. When the same agent flags the same line on a later run, the finding gets the same id, however it's worded. `assignIds()` gives a second finding from the same agent on the same line `-2`, a third `-3`, in the sorted order. Ids are letters, digits and dashes only, because the page puts them in HTML ids and attributes.
+
+The page saves each decision in the review state (`state/<slug>.json`) under the finding's id, with the run it was made on (the agent file's `ranAt`) and the finding's title. A decision from an earlier run whose finding came back shows as decided, "on an earlier run". Decisions on findings that aren't in the current run stay in the state and aren't shown.
+
+Ids used to be positional (`f1`, `f2`, …), so an old decision on one can't be tied to a finding after a re-run. A decision on an id like that counts only when it records the current run, which decisions from before this change don't: their findings show as open. `decided()` in `src/core/service.ts` and `validDecision` in `packages/review-ui/app.js` apply the same rule. A draft whose `fromFinding` is such an id loses the link.
+
+### What an agent ran with
+
+Each entry of the agent file's `agents` (`AgentInfo`) records what that agent ran with, from `runConfig()` in `src/agents/review.ts`:
+
+| Field | What it holds |
+| --- | --- |
+| `harness` | `claude`, `codex` or `pi`. |
+| `model` | The model the harness reported, else the configured one, else `null`. |
+| `thinking` | Pi only: the thinking level, `null` for Pi's default. Left out for other harnesses. |
+| `instructions` | The first 12 hex digits of a SHA-256 of the agent's focus and instructions (`instructionsHash()`), so a change of instructions shows in the report. |
+
+Agent files from before these fields still load.
+
+### The log
+
+`MetricsLog` in `src/core/metrics-log.ts` writes `metrics/events.jsonl` in the global storage: one JSON object per line, appended, never rewritten. The folder is created readable by the user's account only, and the file is written and kept at mode 0600. Only the extension writes it. When `diffline.metrics.enabled` is off, nothing is written; **Diffline: Delete Review Metrics** (`diffline.deleteMetrics`) asks first, then deletes the file.
+
+The page reports what happened with `DIFFLINE_HOST.metrics({ head, run, events })`: finding events name the finding by id, description events name the rule, and a review event carries its counts. The extension takes messages one at a time, in the order they arrive, so lines keep that order. For each message it reads the pull request's current agent file and builds the lines (`buildEvents()`): it checks each event, adds the finding's details (agent, severity, confidence, label, path, title) and the agent's run configuration from the agent file, and leaves out events that don't match it, logging how many. For a posted finding the page sends the posted text; the extension compares it with the text the draft started from and keeps only the result, `edit`. `left-open` is written once per pull request, run and finding. A review's `round` and `newPush` come from the earlier lines for its pull request, read from the file the first time they're needed.
+
+Every line has `v` (1, the schema version), `at` (when, ISO 8601), `pr` (`owner/name#123`), `head` (the commit the page showed), `run` (the agent file's `ranAt` the reviewer saw, or the run that just finished; `null` without one), `kind` and `action`. The rest depends on the kind:
+
+| `kind` | `action` | Other fields |
+| --- | --- | --- |
+| `finding` | `added`, `dismissed`, `copied`, `undone`, `posted`, `left-open` | `finding`: `id`, `agent`, `severity`, `confidence`, `label`, `path`, `title`. `agent`: `id`, `harness`, `model`, `thinking` (Pi), `instructions`. `reason`: the dismiss reason, or for `undone` what was undone. `edit` (posted only): how much the text was reworded, 0 (as the agent wrote it) to 1 (rewritten), the word-level edit distance over the longer text's length. |
+| `description` | `asked`, `skipped`, `undone` | `rule`, `descKind` (`feature` or `fix`), `agent` (the guide), `reason`: the skip reason, or for `undone` what was undone. |
+| `review` | `submitted` | `review`: `event` (`approve`, `changes` or `comment`), `own` (the reviewer wrote the pull request), `comments` (inline comments and replies posted), `fromFindings` (of those, drafts from findings), `reviewed` and `hunks` (hunks marked reviewed, of all), `agents` (an agent review existed), `activeMs` (time the page was focused and in use for this pull request since it opened or the last review posted; a minute without input counts as idle), `round` (1 for the first review of the pull request in the log), `newPush` (the head differs from the previous review's). |
+| `run` | `finished`, `failed`, `cancelled` | `trigger` (`auto` or `manual`), `ms`, and `agents`: per agent, including the lede, `id`, `harness`, `model`, `thinking` (Pi), `instructions` (`null` for the lede), `ms`, `tokens` (`input`, `cachedInput`, `output`, or `null`), `costUsd` (`null` when the harness doesn't report it), `findings`, and `failed` (`missing`, `auth`, `timeout`, `cancelled`, `failed` or `badOutput`) when it failed. |
+
+When each is written: `added` when a finding goes into the review (**Add to my review**, or a composer draft from it), `dismissed` with its reason, `copied`, `undone` when a decision is taken back, and, when a review posts, `posted` for each draft from a finding and `left-open` for each finding of the current run still undecided, then one `review` event. Description rules log `asked`, `skipped` and `undone`. `runAgents()` writes a `run` event after every run that got past its checks, however it ends.
+
+A dismissed finding, on one line in the file:
+
+```json
+{"v":1,"at":"2026-10-11T14:02:31.512Z","pr":"acme/web#123","head":"4f2a9c0d1e8b7a6f5c4d3e2b1a0f9e8d7c6b5a49","run":"2026-10-11T13:55:04.120Z","kind":"finding","action":"dismissed","reason":"Intended","finding":{"id":"correctness-3f9a1c2e","agent":"correctness","severity":"medium","confidence":"Worth asking","label":"question","path":"src/cart/total.ts","title":"Discount applied before tax"},"agent":{"id":"correctness","harness":"claude","model":"sonnet","instructions":"8c1d0e7b2a94"}}
+```
+
+### The report
+
+**Diffline: Show Review Metrics** (`diffline.showMetrics`), or **Review metrics** on Home, switches the review page to its `#metrics` route. The page asks for the numbers with `metricsReport({ days, groupBy })`: the period is 7, 30 or 90 days, or all time, and the agent tables group by agent, harness, model or thinking level. `DifflineService.metricsReport()` reads the log once queued writes have landed, and `src/core/metrics.ts`, a pure module with its own tests, adds it up:
+
+- `parseEvents()` reads each line. Damaged lines, other versions and kinds it doesn't know are counted and skipped.
+- **Outcomes.** `findingOutcomes()` takes each finding's last event per pull request and finding id: the last event wins. `added`, `posted` and `copied` make it useful, `dismissed` dismissed (with the reason), `left-open` ignored, and `undone` undecided. Decided findings are the useful, dismissed and ignored ones. A finding counts in the period its last event falls in. A group with fewer than 10 decided findings says "too few to tell" instead of percentages.
+- **Agent findings**: the outcomes by group, severity by confidence, rewording (the median `edit` of posted findings), description rules asked and skipped with the skip reasons, each group's findings, and, for an agent whose instructions hash or model changed in the period, its latest setup against the one before.
+- **Your reviews**: `review` events per ISO week by decision, with the median active time, coverage (`reviewed / hunks`), later rounds, new pushes, and comments split into the reviewer's own and those from findings.
+- **Agent runs**: per group, runs, failures by kind, median duration, tokens, cost, and cost per useful finding: the cost of the runs that reported one, over the useful findings from those runs (matched by pull request, run and agent). Codex reports no cost, so its runs count as missing.
+
+The page draws the result. **Export** asks for `metricsExport({ format, days })`: `exportText()` returns the period's raw events as JSON (`{ v, exportedAt, since, events }`) or one CSV row per finding outcome (date, pull request, finding id, agent, harness, model, thinking, severity, confidence, outcome, reason, edit), with cells that start with `=`, `+`, `-` or `@` prefixed so spreadsheets don't run them. The panel writes the file where the reviewer picks, at mode 0600.
 
 ## Storage
 
@@ -220,6 +317,7 @@ The extension's global storage (on macOS, `~/Library/Application Support/Code/Us
 | `clones/<owner>__<name>/` | Managed partial clones. |
 | `trees/` | Review checkouts, removed after each run. |
 | `locks/` | Locks shared by VS Code windows. |
+| `metrics/events.jsonl` | The review metrics log, append-only, readable by the user's account only (0600). See [Review metrics](#review-metrics). |
 
 JSON files are written to a temporary file and renamed, and writes to one file are queued, so an older save never lands after a newer one. A file that doesn't parse is set aside as `<file>.damaged`.
 
@@ -241,4 +339,4 @@ Diffline reads pull requests written by other people, and hands them to agents t
 
 **Names from outside.** `parseKey()` accepts only owner and repository names GitHub allows, so a pull request key can't reach outside Diffline's folders. `exportFiles()` skips paths that would leave the run folder.
 
-**The webview.** No remote scripts, styles, fonts or images, and scripts only with the page's nonce. Diffline has no telemetry.
+**The webview.** No remote scripts, styles, fonts or images, and scripts only with the page's nonce. Diffline has no telemetry. The review metrics log is a local file that only the user's account can read, and it's never sent anywhere.

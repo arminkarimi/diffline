@@ -98,11 +98,24 @@ Diffline adds no charges of its own. The agents use your Claude Code or Codex ac
 
 To spend less: turn off `diffline.agents.autoRun`, lower `diffline.agents.maxAutomaticRuns`, turn agents off in `agents.yml`, or list only the ones you want in `diffline.agents.enabled`.
 
+## Review metrics
+
+**Diffline: Show Review Metrics**, or **Review metrics** on Home, opens a report on the review page for the last 7, 30 or 90 days, or all time:
+
+- **Your reviews**: reviews per week by decision, the time the page was in use per review, how much of each diff you marked reviewed, later rounds and reviews after a new push, and your own comments next to those that came from agent findings.
+- **Agent findings**: for each agent, how many of its findings you used (added to your review, posted or copied), dismissed (and the most common reason) or left open when you posted. With fewer than 10 decided findings it says "too few to tell" instead of percentages. Also severity by confidence, how much you reworded findings before posting, the description rules you asked about or skipped, and the numbers before and after an agent's instructions or model changed.
+- **Agent runs**: failures, duration, tokens, cost, and cost per useful finding, for automatic and manual runs.
+
+Group the agent tables by agent, harness, model or Pi's thinking level. **Export CSV** saves one row per finding and its outcome; **Export JSON** saves the raw events.
+
+The report is built from a log Diffline keeps on your computer. [Privacy](#privacy) says what's in it and how to turn it off.
+
 ## Privacy
 
 What stays on your computer:
 
 - Your drafts, reviewed marks and decisions, agent results, cached diffs and run logs, in VS Code's global storage for the extension. Run folders keep each agent's prompt, raw output and log, and `usage.json` with each agent's harness, model, time, tokens and (for Claude Code and Pi) cost.
+- Review metrics, in `metrics/events.jsonl` in the same global storage, readable by your account only (file mode 0600). Each line is one event: what you did with an agent finding (added to your review, dismissed and why, copied, undone, posted and how much you reworded it, or left open when you posted), a description rule you asked about or skipped, a review you posted (its decision, how many comments and how many came from findings, hunks marked reviewed, the time the page was in use), or an agent run (each agent's harness, model, time, tokens, cost, findings and failures). A finding is recorded by its id, agent, severity, confidence, label, file path and title. The title is the only text from a review in the log: no code, diff, finding body or comment text. The log is on by default. Turn off `diffline.metrics.enabled` to stop recording, and run **Diffline: Delete Review Metrics** to delete the file. It's never sent anywhere.
 - Agent settings in `~/.diffline`.
 - Clones: the one in your workspace, the ones in `diffline.clones`, or Diffline's own partial clone in its global storage.
 
@@ -110,7 +123,7 @@ What leaves it:
 
 - **GitHub**, through `gh` and `git`: Diffline reads pull requests, reviews, comments, checks, changed files, `CODEOWNERS` and your teams, and fetches commits. It writes to GitHub only when you press **Post now**: one review with your comments and decision, then your replies and the thread resolutions you queued. **Finish review → Preview what's sent** shows the exact requests first.
 - **Your model provider**, through the agent CLI: the agents send the diff, the pull request's title, description and review threads, and the files they read to Anthropic (Claude Code), OpenAI (Codex) or the provider of the model Pi uses, under your account's terms. Agents only read: a checkout of the pull request made for the run, never your own clone.
-- **Nothing else.** The review page uses VS Code's fonts and loads no remote images, fonts or scripts, and Diffline has no telemetry.
+- **Nothing else.** The review page uses VS Code's fonts and loads no remote images, fonts or scripts, and Diffline has no telemetry. The review metrics are a file on your computer that only you read.
 
 **Pull requests can contain text written to steer the agents** (prompt injection). Claude Code agents can't run commands or read outside the run's folders; Codex agents run commands only inside its read-only sandbox; Pi agents can't run commands, and only read, search and list files. None can change files, and their findings are only suggestions: nothing reaches GitHub unless you add it to your review and post it. Before posting, Diffline refuses a review that contains what looks like a private key or token. Settings that choose which programs run (`diffline.claude.path`, `diffline.codex.path`, `diffline.pi.path`, their `extraArgs`, `diffline.clones`) are user settings only, so a repository's `.vscode/settings.json` can't change them. The [architecture notes](https://github.com/arminkarimi/diffline/blob/main/docs/architecture.md#security-model) describe the security model in full.
 
@@ -149,6 +162,7 @@ What leaves it:
 | `diffline.sidebar.groupBy` | `relationship` | `relationship` or `repository` |
 | `diffline.sidebar.sortBy` | `risk` | `risk`, `created` or `updated` |
 | `diffline.sidebar.othersLimit` | 10 | How many to show under **Others you could review**; 0 hides it |
+| `diffline.metrics.enabled` | on | Keep the local review metrics log (see [Privacy](#privacy)); off writes nothing new |
 | `diffline.clones` | none | `"owner/name": "/path/to/clone"` |
 
 ## Troubleshooting

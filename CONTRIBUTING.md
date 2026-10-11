@@ -58,6 +58,16 @@ node scripts/dev-page.ts owner/name#123 --clone /path/to/clone
 node scripts/e2e-agents.ts owner/name#123 --clone /path/to/clone
 ```
 
+`dev-page.ts` also takes:
+
+| Flag | What it does |
+| --- | --- |
+| `--sample` | Builds the page from `test/fixtures/review-data.json` instead of GitHub. The views work; nothing can be posted. |
+| `--metrics sample\|<file>\|empty\|off` | Gives the page a review metrics report: from made-up events, from a log file (`events.jsonl`), from an empty log, or with metrics turned off. |
+| `--start metrics` | Opens the page on the review metrics report. |
+
+`node scripts/dev-page.ts --sample --metrics sample --start metrics` shows the report on made-up data, without GitHub.
+
 ### The VS Code smoke test
 
 The smoke test opens an isolated VS Code (a throwaway profile and extensions folder) with Diffline, opens a pull request and checks the basics. Agents never run, and nothing is posted. Build first, then run from the repository root:
