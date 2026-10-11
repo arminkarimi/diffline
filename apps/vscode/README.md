@@ -173,6 +173,7 @@ npm run build       # bundles to dist/ and copies packages/review-ui into media/
 npm test            # unit tests (Node 26 runs them as TypeScript)
 npm run typecheck
 npm run package     # writes apps/vscode/diffline-<version>.vsix
+npm run install-local   # packages it and installs it into VS Code; reload the window after
 ```
 
 Open `apps/vscode` in VS Code and press F5 to run the extension. From `apps/vscode`, with a pull request your `gh` account can read:

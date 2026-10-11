@@ -55,6 +55,7 @@ npm run build       # bundle the extension and copy the review page into it
 npm test            # unit tests
 npm run typecheck
 npm run package     # writes apps/vscode/diffline-<version>.vsix
+npm run install-local   # packages it and installs it into VS Code; reload the window after
 ```
 
 Open `apps/vscode` in VS Code and press F5 to run the extension in a development window. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest: the smoke tests, code style and how to cut a release. [docs/architecture.md](docs/architecture.md) explains how the extension works.

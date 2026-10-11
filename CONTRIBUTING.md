@@ -28,6 +28,7 @@ From the repository root:
 | `npm test` | Runs the unit tests with Node's test runner. |
 | `npm run typecheck` | Type-checks the extension and its tests. |
 | `npm run package` | Builds a minified bundle and writes `apps/vscode/diffline-<version>.vsix`. |
+| `npm run install-local` | Packages the extension and installs it into VS Code, replacing the installed version. Set `CODE` to use another build's CLI (`CODE=code-insiders`). Reload the window afterwards. |
 | `npm run watch -w apps/vscode` | Rebuilds the bundle on every change. |
 
 CI runs `npm ci`, the typecheck, the tests and the package step on every push and pull request (`.github/workflows/ci.yml`). Run the same before you push.

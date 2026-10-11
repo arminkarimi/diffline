@@ -506,7 +506,8 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test --test-reporter=spec test/*.test.ts",
     "vscode:prepublish": "node esbuild.mjs --production",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "install-local": "sh scripts/install-local.sh"
   },
   "dependencies": {
     "yaml": "^2.9.1"
