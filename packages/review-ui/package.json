@@ -1,0 +1,7 @@
+{
+  "name": "@diffline/review-ui",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The Diffline review page, which the VS Code extension shows in a webview. Plain HTML, CSS and JavaScript; no build step.",
+  "license": "MIT"
+}

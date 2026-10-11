@@ -1,0 +1,12 @@
+# Ship only what the extension loads at runtime. Everything else stays out.
+**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE*
+!dist/extension.cjs
+!media/diffline.svg
+!media/icon.png
+!media/ui/index.html
+!media/ui/app.js
+!media/ui/styles.css

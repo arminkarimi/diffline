@@ -1,0 +1,484 @@
+{
+  "name": "diffline",
+  "displayName": "Diffline",
+  "description": "Review GitHub pull requests in VS Code with Claude Code or Codex agents that run on your computer: description checks, reading order, flow maps and findings, then post your review.",
+  "version": "0.1.0",
+  "publisher": "arminkarimi",
+  "preview": true,
+  "private": true,
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#151922",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "github",
+    "pull request",
+    "code review",
+    "review",
+    "agents",
+    "claude",
+    "claude code",
+    "codex",
+    "gh"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In Restricted Mode, Diffline ignores workspace values for the settings that choose which programs run (the Claude Code and Codex paths and arguments) and where clones are.",
+      "restrictedConfigurations": [
+        "diffline.claude.path",
+        "diffline.codex.path",
+        "diffline.claude.extraArgs",
+        "diffline.codex.extraArgs",
+        "diffline.clones"
+      ]
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "diffline",
+          "title": "Diffline",
+          "icon": "media/diffline.svg"
+        }
+      ]
+    },
+    "views": {
+      "diffline": [
+        {
+          "id": "diffline.pullRequests",
+          "name": "Pull requests"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "diffline.pullRequests",
+        "contents": "Diffline lists pull requests that need your review and the ones you opened.\n[Refresh](command:diffline.refresh)\n[Open a pull request](command:diffline.openPullRequest)\nDiffline uses the GitHub CLI. If nothing shows up, run `gh auth login` in a terminal."
+      }
+    ],
+    "commands": [
+      {
+        "command": "diffline.refresh",
+        "title": "Refresh",
+        "category": "Diffline",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "diffline.openHome",
+        "title": "Home: All Pull Requests",
+        "category": "Diffline",
+        "icon": "$(home)"
+      },
+      {
+        "command": "diffline.groupBy",
+        "title": "Group Pull Requests…",
+        "category": "Diffline",
+        "icon": "$(group-by-ref-type)"
+      },
+      {
+        "command": "diffline.sortBy",
+        "title": "Sort Pull Requests…",
+        "category": "Diffline",
+        "icon": "$(sort-precedence)"
+      },
+      {
+        "command": "diffline.openPullRequest",
+        "title": "Open a Pull Request…",
+        "category": "Diffline",
+        "icon": "$(add)"
+      },
+      {
+        "command": "diffline.open",
+        "title": "Open Review",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.openOnGitHub",
+        "title": "Open on GitHub",
+        "category": "Diffline",
+        "icon": "$(github)"
+      },
+      {
+        "command": "diffline.runAgents",
+        "title": "Run Agents",
+        "category": "Diffline",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "diffline.cancelAgents",
+        "title": "Stop Agents",
+        "category": "Diffline",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "diffline.showLog",
+        "title": "Show Agent Log",
+        "category": "Diffline",
+        "icon": "$(output)"
+      },
+      {
+        "command": "diffline.selectHarness",
+        "title": "Choose Agent Harnesses…",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.editAgentInstructions",
+        "title": "Customize Agents…",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.newAgent",
+        "title": "New Agent…",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.removeAgent",
+        "title": "Remove an Agent…",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.removePullRequest",
+        "title": "Remove from List",
+        "category": "Diffline",
+        "icon": "$(close)"
+      },
+      {
+        "command": "diffline.resetAgentSettings",
+        "title": "Reset Agent Settings",
+        "category": "Diffline"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "diffline.openHome",
+          "when": "view == diffline.pullRequests",
+          "group": "navigation@0"
+        },
+        {
+          "command": "diffline.openPullRequest",
+          "when": "view == diffline.pullRequests",
+          "group": "navigation@1"
+        },
+        {
+          "command": "diffline.refresh",
+          "when": "view == diffline.pullRequests",
+          "group": "navigation@2"
+        },
+        {
+          "command": "diffline.groupBy",
+          "when": "view == diffline.pullRequests",
+          "group": "navigation@3"
+        },
+        {
+          "command": "diffline.sortBy",
+          "when": "view == diffline.pullRequests",
+          "group": "navigation@4"
+        },
+        {
+          "command": "diffline.showLog",
+          "when": "view == diffline.pullRequests",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "diffline.runAgents",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\.idle/",
+          "group": "inline@1"
+        },
+        {
+          "command": "diffline.cancelAgents",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\.running/",
+          "group": "inline@1"
+        },
+        {
+          "command": "diffline.openOnGitHub",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "diffline.runAgents",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\.idle/",
+          "group": "1_agents@1"
+        },
+        {
+          "command": "diffline.cancelAgents",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\.running/",
+          "group": "1_agents@2"
+        },
+        {
+          "command": "diffline.openOnGitHub",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\./",
+          "group": "2_open@1"
+        },
+        {
+          "command": "diffline.removePullRequest",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\..*\\.pinned$/",
+          "group": "3_list@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "diffline.open",
+          "when": "false"
+        },
+        {
+          "command": "diffline.removePullRequest",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Diffline",
+      "properties": {
+        "diffline.harness": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "enumDescriptions": [
+            "Claude Code CLI (`claude`)",
+            "Codex CLI (`codex`)"
+          ],
+          "default": "claude",
+          "markdownDescription": "The default harness for the review agents. An agent can use another one: set `harness` for it in `~/.diffline/agents.yml`, or run **Diffline: Choose Agent Harnesses…**."
+        },
+        "diffline.claude.path": {
+          "type": "string",
+          "default": "claude",
+          "markdownDescription": "The Claude Code CLI: `claude` when it's on your `PATH`, or the full path to it.",
+          "scope": "machine"
+        },
+        "diffline.claude.model": {
+          "type": "string",
+          "default": "sonnet",
+          "markdownDescription": "Model for the agents that run on Claude Code, such as `sonnet` or `opus`. Empty uses the Claude Code CLI's default. A model set for one agent in `~/.diffline/agents.yml` wins over this."
+        },
+        "diffline.claude.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments passed to every `claude` run, one item per argument.",
+          "scope": "machine"
+        },
+        "diffline.codex.path": {
+          "type": "string",
+          "default": "codex",
+          "markdownDescription": "The Codex CLI: `codex` when it's on your `PATH`, or the full path to it.",
+          "scope": "machine"
+        },
+        "diffline.codex.model": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model for the agents that run on Codex. Empty uses the Codex CLI's default. A model set for one agent in `~/.diffline/agents.yml` wins over this."
+        },
+        "diffline.codex.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra arguments passed to every `codex exec` run, one item per argument, such as `[\"-c\", \"model_reasoning_effort=\\\"high\\\"\"]`.",
+          "scope": "machine"
+        },
+        "diffline.agents.autoRun": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run the agents automatically on pull requests that request your review by name, when they open or get new commits. Any pull request can be run by hand."
+        },
+        "diffline.agents.enabled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Run only these agents, by their ids in `~/.diffline/agents.yml` (such as `guide` or `security`). Empty runs every agent that `agents.yml` turns on."
+        },
+        "diffline.agents.maxParallel": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 16,
+          "markdownDescription": "How many agent processes may run at once on this computer."
+        },
+        "diffline.agents.quietPeriodSeconds": {
+          "type": "integer",
+          "default": 120,
+          "minimum": 0,
+          "markdownDescription": "Wait this many seconds after the last push before an automatic run, so a burst of pushes runs the agents once."
+        },
+        "diffline.agents.maxAutomaticRuns": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 0,
+          "markdownDescription": "Automatic runs per pull request. After that, run the agents by hand."
+        },
+        "diffline.agents.skipDrafts": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Don't run the agents automatically on draft pull requests."
+        },
+        "diffline.agents.autoRunMaxFiles": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 1,
+          "markdownDescription": "Pull requests with more changed files than this don't get automatic agent runs. Press Run to review one."
+        },
+        "diffline.agents.autoRunMaxLines": {
+          "type": "integer",
+          "default": 5000,
+          "minimum": 1,
+          "markdownDescription": "Pull requests with more changed lines (added plus removed) than this don't get automatic agent runs. Press Run to review one."
+        },
+        "diffline.agents.timeoutMinutes": {
+          "type": "integer",
+          "default": 20,
+          "minimum": 1,
+          "markdownDescription": "Stop an agent that runs longer than this many minutes."
+        },
+        "diffline.watch.reviewRequested": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Watch open pull requests that request your review by name. The agents run on these automatically when `diffline.agents.autoRun` is on."
+        },
+        "diffline.watch.teamRequests": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "List pull requests that request a review from one of your teams. Agents don't run on these automatically; use Run Agents."
+        },
+        "diffline.watch.assigned": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "List pull requests assigned to you."
+        },
+        "diffline.watch.reviewed": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "List open pull requests you've reviewed, under **You reviewed**. GitHub takes you off a pull request's requested reviewers once you review it, so without this they'd leave the list until merged."
+        },
+        "diffline.watch.codeOwners": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Mark pull requests that change files you or one of your teams own in the repository's `CODEOWNERS`, and list them under **You're a code owner**."
+        },
+        "diffline.watch.othersToReview": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "At the bottom of the list, show open pull requests in your repositories that nobody asked you to review, that aren't yours and aren't approved yet. Your repositories are the ones in your other groups plus watched ones."
+        },
+        "diffline.sidebar.groupBy": {
+          "type": "string",
+          "enum": [
+            "relationship",
+            "repository"
+          ],
+          "enumDescriptions": [
+            "Requested from you, assigned, code owner, your teams, yours, watched, opened here",
+            "One group per repository"
+          ],
+          "default": "relationship",
+          "markdownDescription": "How the sidebar groups pull requests. **Others you could review** stays at the bottom either way."
+        },
+        "diffline.sidebar.sortBy": {
+          "type": "string",
+          "enum": [
+            "risk",
+            "created",
+            "updated"
+          ],
+          "enumDescriptions": [
+            "Riskiest first",
+            "Most recently created first",
+            "Most recent activity first"
+          ],
+          "default": "risk",
+          "markdownDescription": "How pull requests are ordered within each group."
+        },
+        "diffline.sidebar.othersLimit": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 0,
+          "maximum": 50,
+          "markdownDescription": "How many pull requests to show under **Others you could review**. 0 hides the group."
+        },
+        "diffline.watch.authored": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Watch open pull requests you opened."
+        },
+        "diffline.watch.repositories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Also watch every open pull request in these repositories (`owner/name`)."
+        },
+        "diffline.watch.pollSeconds": {
+          "type": "integer",
+          "default": 60,
+          "minimum": 15,
+          "markdownDescription": "How often to check GitHub for new pull requests and pushes, in seconds."
+        },
+        "diffline.clones": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "markdownDescription": "Local clones to use, as `\"owner/name\": \"/path/to/clone\"`. Workspace folders are found automatically. Without a clone, Diffline keeps its own partial clone.",
+          "scope": "machine"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test --test-reporter=spec test/*.test.ts",
+    "vscode:prepublish": "node esbuild.mjs --production",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "author": "Armin Karimi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arminkarimi/diffline.git",
+    "directory": "apps/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/arminkarimi/diffline/issues"
+  },
+  "homepage": "https://github.com/arminkarimi/diffline/tree/main/apps/vscode#readme"
+}
