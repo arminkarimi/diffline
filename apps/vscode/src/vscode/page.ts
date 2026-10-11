@@ -29,19 +29,24 @@ export function hostShim(key: string): string {
     pending.delete(m.id);
     if (m.ok) p.resolve(m.data); else p.reject(new Error(m.error || "The request failed."));
   });
+  // A message the extension answers with an "api-result" of the same id.
+  const ask = (m) => {
+    const id = page + "-" + ++seq;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      vscode.postMessage({ ...m, key, id });
+    });
+  };
   window.DIFFLINE_HOST = {
-    api(method, path, body) {
-      const id = page + "-" + ++seq;
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        vscode.postMessage({ type: "api", key, id, method, path, body });
-      });
-    },
+    api(method, path, body) { return ask({ type: "api", method, path, body }); },
     reload() { vscode.postMessage({ type: "reload", key }); },
     open(target) { vscode.postMessage({ type: "open", key, target }); },
     runAgents() { vscode.postMessage({ type: "runAgents", key }); },
     // What the reviewer did with agent findings and the reviews they posted, for the local review metrics: { head, run, events }.
     metrics(m) { vscode.postMessage({ type: "metrics", key, head: m && m.head, run: m && m.run, events: m && m.events }); },
+    // The review metrics report for a period ({ days: 7 | 30 | 90 | null, groupBy }), and its exports through a save dialog.
+    metricsReport(o) { return ask({ type: "metricsReport", days: o && o.days, groupBy: o && o.groupBy }); },
+    metricsExport(o) { return ask({ type: "metricsExport", format: o && o.format, days: o && o.days }); },
   };
 })();`;
 }

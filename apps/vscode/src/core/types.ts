@@ -345,8 +345,8 @@ export interface LiveData {
   /** The list's groups, in the sidebar's order; without them the page shows the list ungrouped. */
   groups?: Array<{ id: string; label: string; description: string; collapsed: boolean; keys: string[] }>;
   grouping?: { by: "relationship" | "repository"; sort: "risk" | "created" | "updated" };
-  /** "inbox" opens the page on its list (the sidebar's Home). */
-  startView?: "inbox";
+  /** "inbox" opens the page on its list (the sidebar's Home); "metrics" on the review metrics report. */
+  startView?: "inbox" | "metrics";
 }
 
 /* ---------- Risk (computeRisk in app.js) ---------- */

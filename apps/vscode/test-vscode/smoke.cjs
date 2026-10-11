@@ -26,7 +26,7 @@ exports.run = async () => {
   step(`activated in ${Date.now() - t} ms`);
 
   const commands = await vscode.commands.getCommands(true);
-  for (const c of ["diffline.refresh", "diffline.open", "diffline.openPullRequest", "diffline.runAgents", "diffline.cancelAgents", "diffline.selectHarness", "diffline.editAgentInstructions", "diffline.resetAgentSettings", "diffline.showLog", "diffline.newAgent", "diffline.removeAgent", "diffline.openHome", "diffline.groupBy", "diffline.sortBy"]) {
+  for (const c of ["diffline.refresh", "diffline.open", "diffline.openPullRequest", "diffline.runAgents", "diffline.cancelAgents", "diffline.selectHarness", "diffline.editAgentInstructions", "diffline.resetAgentSettings", "diffline.showLog", "diffline.newAgent", "diffline.removeAgent", "diffline.openHome", "diffline.groupBy", "diffline.sortBy", "diffline.showMetrics", "diffline.deleteMetrics"]) {
     assert.ok(commands.includes(c), `command ${c} is registered`);
   }
   step("commands registered");
@@ -66,6 +66,15 @@ exports.run = async () => {
   const groups = JSON.parse(api.panel.html.match(/"groups":(\[.*?\]),"grouping"/)[1]);
   step(`home from scratch in ${Date.now() - t} ms: ${groups.map((g) => `${g.label} (${g.keys.length})`).join(", ")}`);
   assert.ok(groups.length > 0, "the home page has groups");
+
+  // The review metrics report: from an open page it switches in place; from scratch the page opens on it.
+  await vscode.commands.executeCommand("diffline.showMetrics");
+  api.panel.dispose();
+  t = Date.now();
+  await vscode.commands.executeCommand("diffline.showMetrics");
+  await until(() => api.panel.html.includes('"startView":"metrics"'), 60000, "the review metrics page");
+  const report = await api.service.metricsReport({ days: 30, groupBy: "agent" });
+  step(`review metrics page in ${Date.now() - t} ms: ${report.report.total} events in the log, metrics ${report.enabled ? "on" : "off"}`);
 
   // A fresh profile gets agents.yml in the current format: each agent with its name and focus.
   const yml = require("node:fs").readFileSync(require("node:path").join(process.env.DIFFLINE_HOME, "agents.yml"), "utf8");

@@ -173,3 +173,74 @@ test("ReviewPanel: the page's metrics reach the log through the extension, in th
   assert.deepEqual(lines[0].agent, { id: "tests", harness: "claude", model: "sonnet", instructions: "0123456789ab" });
   panel.dispose();
 });
+
+test("ReviewPanel: Show Review Metrics opens the page on its report, or switches an open page to it", async () => {
+  const views: Array<string | undefined> = [];
+  const { service, loads } = fakeService(async (key, opts: any) => {
+    views.push(opts.view);
+    return { ...review(key, opts.home), live: { ...review(key, opts.home).live, ...(opts.view ? { startView: opts.view } : {}) } };
+  });
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, () => undefined);
+  await panel.showMetrics();
+  const webview = fake.created.at(-1)!.webview;
+  assert.deepEqual(loads.at(-1), { key: "o/r#1", home: true }, "the first pull request behind it, as Home does");
+  assert.equal(views.at(-1), "metrics");
+  assert.match(webview.html, /"startView":"metrics"/);
+  assert.equal(fake.created.at(-1)!.title, "Diffline: review metrics");
+
+  // A reload keeps the report; with a page on screen, the command switches it without loading.
+  await panel.reload();
+  assert.equal(views.at(-1), "metrics");
+  const before = loads.length;
+  await panel.showMetrics();
+  assert.equal(loads.length, before);
+  assert.deepEqual(webview.posted.at(-1), { type: "host-view", view: "metrics" });
+  panel.dispose();
+});
+
+test("ReviewPanel: the page asks for the metrics report and exports, and gets answers to the same request", async () => {
+  const { service } = fakeService(async (key) => review(key));
+  const asked: any[] = [];
+  (service as any).metricsReport = async (o: any) => { asked.push(o); return { enabled: true, days: o.days, report: { total: 0 } }; };
+  (service as any).metricsExport = async (format: string) => ({ text: format === "csv" ? "date\r\n" : "{}\n", name: `diffline-x.${format}`, events: 3 });
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, () => undefined);
+  await panel.show(A);
+  const webview = fake.created.at(-1)!.webview;
+  const page = runPage(webview.html);
+
+  void page.host.metricsReport({ days: 90, groupBy: "model" });
+  const req = page.sent.at(-1);
+  assert.deepEqual({ type: req.type, key: req.key, days: req.days, groupBy: req.groupBy }, { type: "metricsReport", key: "o/r#1", days: 90, groupBy: "model" });
+  webview.receive(req);
+  await settle();
+  assert.deepEqual(asked, [{ days: 90, groupBy: "model" }]);
+  assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: req.id, ok: true, data: { enabled: true, days: 90, report: { total: 0 } } });
+
+  // Export: the extension writes the file where the save dialog says; cancelling writes nothing.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "diffline-export-"));
+  fake.saveDialog.answer = { fsPath: path.join(dir, "out.csv") };
+  void page.host.metricsExport({ format: "csv", days: null });
+  const ex = page.sent.at(-1);
+  assert.equal(ex.type, "metricsExport");
+  webview.receive(ex);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: ex.id, ok: true, data: { saved: path.join(dir, "out.csv"), events: 3 } });
+  const { readFile, stat } = await import("node:fs/promises");
+  assert.equal(await readFile(path.join(dir, "out.csv"), "utf8"), "date\r\n");
+  assert.equal((await stat(path.join(dir, "out.csv"))).mode & 0o777, 0o600);
+  assert.deepEqual(fake.saveDialog.opened.at(-1).filters, { CSV: ["csv"] });
+
+  fake.saveDialog.answer = undefined;
+  void page.host.metricsExport({ format: "json", days: 7 });
+  webview.receive(page.sent.at(-1));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(webview.posted.at(-1).data, { saved: null, events: 3 });
+
+  // A failure reaches the page as an error.
+  (service as any).metricsReport = async () => { throw new Error("disk on fire"); };
+  void page.host.metricsReport({ days: 7, groupBy: "agent" });
+  webview.receive(page.sent.at(-1));
+  await settle();
+  assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: page.sent.at(-1).id, ok: false, error: "disk on fire" });
+  panel.dispose();
+});

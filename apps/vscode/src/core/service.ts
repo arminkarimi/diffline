@@ -20,6 +20,7 @@ import type { Repos } from "./repos.ts";
 import { computeRisk } from "./risk.ts";
 import type { Store } from "./store.ts";
 import { MetricsLog, type MetricsEvent, type PageMetrics } from "./metrics-log.ts";
+import { aggregate, exportText, GROUP_BYS, parseEvents, PERIODS, sinceDays, type GroupBy, type MetricsReport } from "./metrics.ts";
 
 export interface ServiceConfig {
   watch: {
@@ -594,7 +595,7 @@ export class DifflineService extends EventEmitter {
   }
 
   /** Everything the page needs for one pull request. */
-  async loadReview(key: PrKey, opts: { cached?: boolean; home?: boolean } = {}): Promise<{ data: ReviewData; live: LiveData }> {
+  async loadReview(key: PrKey, opts: { cached?: boolean; home?: boolean; view?: "metrics" } = {}): Promise<{ data: ReviewData; live: LiveData }> {
     const detail = await this.detail(key, opts.cached ? Number.POSITIVE_INFINITY : 0);
     const { data } = await this.loadData(key, detail);
     const [agent, state] = await Promise.all([this.store.readAgent(key), this.store.readState(key)]);
@@ -619,7 +620,8 @@ export class DifflineService extends EventEmitter {
     live.groups = groups;
     live.grouping = this.grouping();
     live.list = await this.listItems(key, detail, groups);
-    if (opts.home) live.startView = "inbox";
+    if (opts.view === "metrics") live.startView = "metrics";
+    else if (opts.home) live.startView = "inbox";
     return { data, live };
   }
 
@@ -745,6 +747,27 @@ export class DifflineService extends EventEmitter {
   /** A metrics message from the page: what the reviewer did with agent findings, and reviews posted. */
   metrics(key: PrKey, msg: PageMetrics): Promise<MetricsEvent[]> {
     return this.metricsLog.record(key, msg, () => this.store.readAgent(key));
+  }
+
+  /**
+   * The review metrics report for the page: the log read and added up over a period (7, 30 or 90 days, or null for
+   * all of it), grouped by agent, harness, model or thinking level. Values the page doesn't offer fall back to 30 days
+   * by agent.
+   */
+  async metricsReport(opts: { days?: unknown; groupBy?: unknown }, now = new Date()): Promise<{ enabled: boolean; days: number | null; report: MetricsReport }> {
+    const days = PERIODS.includes(opts.days as number | null) ? (opts.days as number | null) : 30;
+    const groupBy = GROUP_BYS.includes(opts.groupBy as GroupBy) ? (opts.groupBy as GroupBy) : "agent";
+    const { events, skipped } = parseEvents(await this.metricsLog.read());
+    return { enabled: this.metricsLog.on, days, report: aggregate(events, { since: sinceDays(days, now), groupBy, now, skipped }) };
+  }
+
+  /** An export of the review metrics for a period: the raw events as JSON, or one row per finding outcome as CSV. */
+  async metricsExport(format: unknown, days: unknown, now = new Date()): Promise<{ text: string; name: string; events: number }> {
+    const fmt = format === "csv" ? "csv" : "json";
+    const d = PERIODS.includes(days as number | null) ? (days as number | null) : null;
+    const { events } = parseEvents(await this.metricsLog.read());
+    const date = now.toISOString().slice(0, 10);
+    return { text: exportText(events, fmt, sinceDays(d, now), now), name: fmt === "csv" ? `diffline-finding-outcomes-${date}.csv` : `diffline-review-metrics-${date}.json`, events: events.length };
   }
 
   /* ---------- Agents ---------- */

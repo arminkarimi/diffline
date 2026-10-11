@@ -139,3 +139,36 @@ test("review metrics: the page's events and every run go to metrics/events.jsonl
   await assert.rejects(stat(file));
   service.dispose();
 });
+
+test("review metrics report: an empty or missing log, turned off, a damaged line, and the page's period and grouping", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "diffline-service-"));
+  let on = true;
+  const service = await makeService({ root, config: () => config({ metrics: on }) });
+  const now = new Date("2026-10-14T12:00:00Z");
+
+  const none = await service.metricsReport({ days: 7, groupBy: "harness" }, now);
+  assert.deepEqual([none.enabled, none.days, none.report.total, none.report.groupBy], [true, 7, 0, "harness"]);
+  on = false;
+  assert.equal((await service.metricsReport({}, now)).enabled, false);
+  on = true;
+
+  const finding = { v: 1, at: "2026-10-13T12:00:00Z", pr: "acme/web#9", head: null, run: "r1", kind: "finding", action: "added", finding: { id: "tests-1", agent: "tests", severity: "low", confidence: "Minor", label: "nit", path: "a.ts", title: "T" }, agent: { id: "tests", harness: "pi", model: "m", thinking: null, instructions: "i" } };
+  const old = { ...finding, at: "2026-08-01T12:00:00Z", finding: { ...finding.finding, id: "tests-2" } };
+  await service.metricsLog.delete();
+  const { mkdir } = await import("node:fs/promises");
+  await mkdir(path.dirname(service.metricsLog.file), { recursive: true });
+  await writeFile(service.metricsLog.file, [JSON.stringify(finding), "{damaged", JSON.stringify(old)].join("\n") + "\n");
+  const r = await service.metricsReport({ days: "lots", groupBy: "nonsense" }, now);
+  assert.deepEqual([r.days, r.report.groupBy], [30, "agent"], "values the page doesn't offer fall back");
+  assert.deepEqual([r.report.total, r.report.inPeriod, r.report.skipped, r.report.findings.total.useful], [2, 1, 1, 1]);
+  const all = await service.metricsReport({ days: null, groupBy: "thinking" }, now);
+  assert.deepEqual([all.days, all.report.findings.total.useful, all.report.findings.groups[0].key], [null, 2, "default"]);
+
+  const csv = await service.metricsExport("csv", 30, now);
+  assert.equal(csv.name, "diffline-finding-outcomes-2026-10-14.csv");
+  assert.equal(csv.text.trimEnd().split("\r\n").length, 2);
+  const json = await service.metricsExport("json", null, now);
+  assert.equal(json.name, "diffline-review-metrics-2026-10-14.json");
+  assert.equal(JSON.parse(json.text).events.length, 2);
+  service.dispose();
+});

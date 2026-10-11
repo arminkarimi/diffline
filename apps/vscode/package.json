@@ -167,6 +167,12 @@
         "category": "Diffline"
       },
       {
+        "command": "diffline.showMetrics",
+        "title": "Show Review Metrics",
+        "category": "Diffline",
+        "icon": "$(graph)"
+      },
+      {
         "command": "diffline.deleteMetrics",
         "title": "Delete Review Metrics",
         "category": "Diffline"

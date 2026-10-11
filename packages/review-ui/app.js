@@ -1564,10 +1564,10 @@ function syncHTML() {
 
 function ribbonHTML() {
   return `<div class="ribbon ribbon-live" id="ribbon"><span class="ribbon-tag">Local</span>
-      <span class="ribbon-text">${S.view === "inbox" ? "Your pull requests" : `${esc(LIVE.repo)} #${LIVE.number}`}${LIVE.github ? "" : ` · <b>GitHub isn't connected.</b> Run <code>gh auth login</code>, then refresh.`}<span class="long"> · Drafts stay on this machine until you post them.</span></span>
-    ${S.view === "inbox" ? "" : syncHTML()}
+      <span class="ribbon-text">${S.view === "inbox" ? "Your pull requests" : S.view === "metrics" ? "Your review metrics" : `${esc(LIVE.repo)} #${LIVE.number}`}${LIVE.github ? "" : ` · <b>GitHub isn't connected.</b> Run <code>gh auth login</code>, then refresh.`}<span class="long"> · Drafts stay on this machine until you post them.</span></span>
+    ${S.view !== "pr" ? "" : syncHTML()}
     <button type="button" class="link" data-act="live-refresh">Refresh</button>
-      ${S.view === "inbox" ? "" : `<a class="link" href="${esc(LIVE.url)}" target="_blank" rel="noopener">GitHub</a>`}</div>`;
+      ${S.view !== "pr" ? "" : `<a class="link" href="${esc(LIVE.url)}" target="_blank" rel="noopener">GitHub</a>`}</div>`;
 }
 
 function miniTrackHTML(states) {
@@ -3272,7 +3272,7 @@ const isWaitingOnYou = (it) => it.state === "OPEN" && !it.own && it.viewerReview
 
 function liveRowHTML(it) {
   // Opened from the sidebar's Home, the pull request behind the page isn't one you chose, so it isn't marked.
-  const current = itemKey(it) === LIVE_KEY && LIVE.startView !== "inbox";
+  const current = itemKey(it) === LIVE_KEY && !LIVE.startView;
   const author = it.author ? livePid(it.author.login) : "ghost";
   const flow = current ? stages().map((st) => st.st) : summaryFlow(it);
   const flowText = current ? flowSummary().replace(": ", " · ") : summaryFlowText(it);
@@ -3332,10 +3332,270 @@ function inboxHTML() {
   const first = PEOPLE.you && PEOPLE.you.name && PEOPLE.you.name !== "You" ? PEOPLE.you.name.split(" ")[0] : "";
   return `${ribbonHTML()}${topbarHTML()}<main class="page inbox" id="main">
     <header class="inbox-head"><p class="eyebrow">${liveRepos().length > 2 ? `${plural(list.length, "pull request")} in ${plural(liveRepos().length, "repository", "repositories")}` : esc(liveRepos().length > 1 ? joinNames(liveRepos().map((r) => r.split("/").pop())) : LIVE.repo)} · on this machine</p><h1>${greeting}${first ? `, ${esc(first)}` : ""}</h1>
-      <p class="lede">${waiting.length ? `${plural(waiting.length, "pull request")} ${waiting.length === 1 ? "is" : "are"} waiting on you.` : "Nothing is waiting on you."} Drafts and review marks stay on this machine until you post them.</p></header>
+      <p class="lede">${waiting.length ? `${plural(waiting.length, "pull request")} ${waiting.length === 1 ? "is" : "are"} waiting on you.` : "Nothing is waiting on you."} Drafts and review marks stay on this machine until you post them.</p>
+      ${typeof HOST.metricsReport === "function" ? `<p class="ib-links"><button type="button" class="btn sm" data-act="metrics">${icon("chart")}Review metrics</button><span class="dim">Your reviews per week, which agent findings you use, and what agent runs cost</span></p>` : ""}</header>
     ${sections}
     <p class="dim live-note">${icon("info")}<span>${note}</span></p>
   </main>`;
+}
+
+/* ---------- Review metrics ---------- */
+
+// The extension keeps a log of what the reviewer does with agent findings, the reviews they post and each agent run
+// (on this machine only), and adds it up for a period when the page asks (HOST.metricsReport). The page draws the
+// numbers as tables: Your reviews, Agent findings and Agent runs.
+
+const METRIC_PERIODS = [[7, "7 days"], [30, "30 days"], [90, "90 days"], [null, "All time"]];
+const METRIC_GROUPS = { agent: "Agent", harness: "Harness", model: "Model", thinking: "Thinking" };
+const OUTCOME_WORD = { useful: "Useful", dismissed: "Dismissed", ignored: "Ignored", undecided: "Undecided" };
+const OUTCOME_PILL = { useful: "ok", dismissed: "bad", ignored: "warn", undecided: "" };
+const ACTION_WORD = { added: "Added to your review", posted: "Posted", copied: "Copied", dismissed: "Dismissed", "left-open": "Left open when you posted", undone: "Decision undone" };
+const FAILURE_WORD = { missing: "not installed", auth: "not signed in", timeout: "timed out", cancelled: "stopped", failed: "failed", badOutput: "unusable output" };
+const M = { days: 30, groupBy: "agent", data: null, error: "", loading: false, seq: 0, exFilter: "all" };
+try {
+  const saved = JSON.parse(localStorage.getItem("diffline:metrics") || "{}");
+  if (METRIC_PERIODS.some(([d]) => d === saved.days)) M.days = saved.days;
+  if (METRIC_GROUPS[saved.groupBy]) M.groupBy = saved.groupBy;
+} catch { /* optional */ }
+
+const pctText = (x) => (x == null ? "–" : `${Math.round(x * 100)}%`);
+const money = (x) => (x == null ? "–" : x > 0 && x < 0.01 ? "<$0.01" : `$${x.toFixed(2)}`);
+const compact = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : num(n));
+function duration(ms) {
+  if (ms == null) return "–";
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min ${s % 60 ? `${s % 60} s` : ""}`.trim() : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+}
+const minutesText = (m) => (m == null ? "–" : m < 1 ? "<1 min" : `${Math.round(m)} min`);
+const periodWord = () => (M.days ? `the last ${M.days} days` : "all time");
+const F_SHORT = fmt({ month: "short", day: "numeric" });
+const shortDate = (iso) => { const t = Date.parse(iso.length === 10 ? `${iso}T12:00:00` : iso); return Number.isFinite(t) ? F_SHORT.format(new Date(t)) : ""; };
+
+function loadMetrics() {
+  if (typeof HOST.metricsReport !== "function") {
+    M.error = "This version of the Diffline extension can't show review metrics.";
+    refreshMetrics();
+    return;
+  }
+  const seq = ++M.seq;
+  M.loading = true;
+  M.error = "";
+  refreshMetrics();
+  HOST.metricsReport({ days: M.days, groupBy: M.groupBy }).then(
+    (d) => { if (seq !== M.seq) return; M.data = d; M.loading = false; refreshMetrics(); },
+    (err) => { if (seq !== M.seq) return; M.loading = false; M.error = err.message || String(err); refreshMetrics(); },
+  );
+}
+
+function refreshMetrics() {
+  if (S.view !== "metrics") return;
+  // The pickers are redrawn: keep the keyboard focus on the button that was pressed.
+  const had = document.activeElement && document.activeElement.closest && document.activeElement.closest("#mx-controls [data-act]");
+  const again = had ? `#mx-controls [data-act="${had.dataset.act}"]${had.dataset.days ? `[data-days="${had.dataset.days}"]` : ""}${had.dataset.by ? `[data-by="${had.dataset.by}"]` : ""}${had.dataset.format ? `[data-format="${had.dataset.format}"]` : ""}` : null;
+  replaceHTML("#mx-controls", metricsControlsHTML());
+  if (again) { const el = $(again); if (el) el.focus({ preventScroll: true }); }
+  const body = $("#metrics-body");
+  if (body) { body.innerHTML = metricsBodyHTML(); body.setAttribute("aria-busy", String(M.loading)); }
+  const st = $("#mx-status");
+  if (st) st.textContent = M.loading ? "Reading the review metrics…" : M.error ? `Couldn't read the review metrics: ${M.error}` : M.data ? `Showing ${periodWord()}, grouped by ${METRIC_GROUPS[M.groupBy].toLowerCase()}.` : "";
+}
+
+function saveMetricPrefs() { try { localStorage.setItem("diffline:metrics", JSON.stringify({ days: M.days, groupBy: M.groupBy })); } catch { /* optional */ } }
+
+const segHTML = (label, id, items, act, attr) => `<div class="mx-ctl"><span class="eyebrow" id="${id}">${label}</span>
+  <div class="seg" role="group" aria-labelledby="${id}">${items.map(([value, text, on]) => `<button type="button" data-act="${act}" data-${attr}="${esc(value)}" aria-pressed="${on}">${esc(text)}</button>`).join("")}</div></div>`;
+
+function metricsControlsHTML() {
+  const exportable = !!(M.data && M.data.report.total);
+  return `<div class="mx-controls" id="mx-controls">
+    ${segHTML("Period", "mx-period", METRIC_PERIODS.map(([d, t]) => [d == null ? "all" : d, t, M.days === d]), "mx-period", "days")}
+    ${segHTML("Group agents by", "mx-group", Object.entries(METRIC_GROUPS).map(([k, t]) => [k, t, M.groupBy === k]), "mx-group", "by")}
+    <div class="mx-export">${exportable ? `<button type="button" class="btn sm" data-act="mx-export" data-format="csv" title="One row per finding outcome in ${periodWord()}">${icon("download")}Export CSV</button>
+      <button type="button" class="btn sm" data-act="mx-export" data-format="json" title="The raw events in ${periodWord()}">${icon("download")}Export JSON</button>` : ""}</div>
+  </div>`;
+}
+
+function metricsHTML() {
+  return `${ribbonHTML()}${topbarHTML()}<main class="page inbox metrics" id="main">
+    <header class="inbox-head"><p class="eyebrow">On this machine</p><h1>Review metrics</h1>
+      <p class="lede">The reviews you posted, what you did with agent findings, and what agent runs took and cost. Diffline keeps this log on this computer and never sends it anywhere.</p></header>
+    ${metricsControlsHTML()}
+    <p class="sr-only" role="status" id="mx-status"></p>
+    <div id="metrics-body" aria-busy="${M.loading}">${metricsBodyHTML()}</div>
+  </main>`;
+}
+
+function metricsEmptyHTML(enabled) {
+  return `<section class="mx-empty">
+    <h2>${enabled ? "No review metrics yet" : "Review metrics are off"}</h2>
+    <p>As you review, Diffline records what you do with each agent finding (added to your review, dismissed and why, copied, posted, or left open when you post), the description checks you ask about or skip, each review you post with the time you spent on it, and each agent run's duration, tokens and cost.</p>
+    <p>It keeps them in a file in the extension's storage on this computer. They hold finding titles, but no code, diffs or comment text.</p>
+    <p>${enabled ? "Open a pull request, decide on its agent findings and post a review, and the numbers show up here." : "Turn on the <code>diffline.metrics.enabled</code> setting to start recording."} <b>Diffline: Delete Review Metrics</b> deletes the file.</p>
+  </section>`;
+}
+
+function metricsBodyHTML() {
+  if (M.error && !M.data) return `<p class="mx-note bad">${icon("alert")}<span>Couldn't read the review metrics. ${esc(M.error)}</span></p>`;
+  if (!M.data) return `<p class="mx-note dim"><span class="spin" aria-hidden="true"></span>Reading the review metrics…</p>`;
+  const { enabled, report: r } = M.data;
+  if (!r.total) return metricsEmptyHTML(enabled);
+  const notes = [];
+  if (!enabled) notes.push(`<p class="mx-note">${icon("info")}<span>Review metrics are off, so nothing new is recorded. These are from before they were turned off. The <code>diffline.metrics.enabled</code> setting turns them back on.</span></p>`);
+  if (r.skipped) notes.push(`<p class="mx-note dim">${icon("info")}<span>${plural(r.skipped, "line")} of the log couldn't be read and ${r.skipped === 1 ? "isn't" : "aren't"} counted.</span></p>`);
+  if (!r.inPeriod) {
+    return `${notes.join("")}<section class="mx-empty"><h2>Nothing in ${periodWord()}</h2><p>The log has ${plural(r.total, "entry", "entries")}, all from before then.</p>
+      <button type="button" class="btn sm" data-act="mx-period" data-days="all">Show all time</button></section>`;
+  }
+  return `${notes.join("")}${reviewsSectionHTML(r)}${findingsSectionHTML(r)}${runsSectionHTML(r)}`;
+}
+
+/* Your reviews */
+
+function reviewsSectionHTML(r) {
+  const t = r.reviews.total;
+  const head = `<h2 class="mx-h">Your reviews</h2>`;
+  if (!t.reviews) return `<section class="mx-sec" aria-labelledby="mx-reviews">${head.replace("<h2", '<h2 id="mx-reviews"')}<p class="dim">No reviews posted from Diffline in ${periodWord()}.</p></section>`;
+  const tiles = [
+    ["Reviews posted", num(t.reviews), `${t.approve} approved · ${t.changes} changes requested · ${t.comment} comments only`],
+    ["Whose pull requests", `${t.others} · ${t.own}`, "others' · your own"],
+    ["Median time per review", minutesText(t.activeMinutes), t.activeMeasured < t.reviews ? `${t.activeMeasured} of ${t.reviews} reviews measured` : "time the page was in use"],
+    ["Median coverage", pctText(t.coverage), "of hunks marked reviewed"],
+    ["Later rounds", pctText(t.laterRoundsPct), `${t.laterRounds} not the first review · ${t.newPush} after a new push`],
+    ["Comments", `${num(t.yours)} · ${num(t.fromFindings)}`, "yours · from agent findings"],
+  ];
+  const all = r.reviews.weeks;
+  const weeks = (all.length > 26 ? all.filter((w) => w.reviews) : all).slice().reverse();
+  const max = Math.max(1, ...weeks.map((w) => w.reviews));
+  return `<section class="mx-sec" aria-labelledby="mx-reviews"><h2 class="mx-h" id="mx-reviews">Your reviews</h2>
+    <dl class="mx-tiles">${tiles.map(([k, v, sub]) => `<div class="mx-tile"><dt>${esc(k)}</dt><dd><b>${esc(v)}</b><span>${esc(sub)}</span></dd></div>`).join("")}</dl>
+    <div class="table-wrap"><table class="deps-table mx-table">
+      <caption>Reviews per week, newest first${all.length > weeks.length ? ". Weeks without reviews aren't listed" : ""}</caption>
+      <thead><tr><th scope="col">Week of</th><th scope="col">Reviews</th><th scope="col">Approved · changes · comment</th><th scope="col">Others' · own</th><th scope="col" class="num">Median time</th><th scope="col" class="num">Coverage</th><th scope="col" class="num">Later rounds</th><th scope="col">Comments: yours · agents'</th></tr></thead>
+      <tbody>${weeks.map((w) => `<tr${w.reviews ? "" : ' class="dim"'}><th scope="row" title="${esc(w.week)}">${esc(shortDate(w.start))}</th>
+        <td><span class="mx-count"><span class="mx-bar" aria-hidden="true"><i style="width:${Math.round((w.reviews / max) * 100)}%"></i></span><span class="num">${w.reviews}</span></span></td>
+        <td>${w.reviews ? `${w.approve} · ${w.changes} · ${w.comment}` : "–"}</td><td>${w.reviews ? `${w.others} · ${w.own}` : "–"}</td>
+        <td class="num">${minutesText(w.activeMinutes)}</td><td class="num">${pctText(w.coverage)}</td>
+        <td class="num">${w.reviews ? `${w.laterRounds}${w.newPush ? ` <span class="dim">(${w.newPush} new push${w.newPush === 1 ? "" : "es"})</span>` : ""}` : "–"}</td>
+        <td>${w.reviews ? `${w.yours} · ${w.fromFindings}` : "–"}</td></tr>`).join("")}</tbody>
+    </table></div>
+  </section>`;
+}
+
+/* Agent findings */
+
+function pctCell(g, key, n) {
+  if (!g.decided) return `<td class="num dim">–</td>`;
+  return `<td class="num">${g.tooFew ? `${n}` : `${pctText(g[key])} <span class="dim">(${n})</span>`}</td>`;
+}
+
+function findingRowHTML(g, total) {
+  const head = total ? `<th scope="row">All</th>`
+    : `<th scope="row"><button type="button" class="link mono" data-act="mx-examples" data-key="${esc(g.key)}" title="Show its findings">${esc(g.key)}</button></th>`;
+  return `<tr${total ? ' class="mx-total"' : ""}>${head}<td class="num">${g.findings}</td>
+    ${pctCell(g, "usefulPct", g.useful)}${pctCell(g, "dismissedPct", g.dismissed)}${pctCell(g, "ignoredPct", g.ignored)}
+    <td class="num">${g.undecided || "–"}</td>
+    <td>${g.tooFew ? `<span class="pill">Too few to tell</span>` : g.topDismissReason ? `${esc(g.topDismissReason.reason)} <span class="dim">(${g.topDismissReason.count})</span>` : "–"}</td>
+    <td class="num">${g.editMedian == null ? "–" : pctText(g.editMedian)}</td></tr>`;
+}
+
+function matrixHTML(f) {
+  if (!f.severities.length) return "";
+  const cell = (sev, conf) => {
+    const c = f.matrix.find((x) => x.severity === sev && x.confidence === conf);
+    if (!c || !c.findings) return `<td class="num dim">–</td>`;
+    if (c.tooFew) return `<td class="num"><span class="dim">${c.useful} of ${c.decided} useful</span></td>`;
+    return `<td class="num">${pctText(c.usefulPct)} useful <span class="dim">of ${c.decided}</span></td>`;
+  };
+  return `${f.matrix.some((c) => c.findings && c.tooFew) ? `<p class="mx-lede">Cells with fewer than 10 decided findings show counts only.</p>` : ""}<div class="table-wrap"><table class="deps-table mx-table">
+    <caption>Useful share by severity and confidence</caption>
+    <thead><tr><th scope="col">Severity</th>${f.confidences.map((c) => `<th scope="col" class="num">${esc(c)}</th>`).join("")}</tr></thead>
+    <tbody>${f.severities.map((s) => `<tr><th scope="row">${esc(SEV[s] || s)}</th>${f.confidences.map((c) => cell(s, c)).join("")}</tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
+function configChangesHTML(f) {
+  if (!f.changes.length) return "";
+  const side = (s) => `${s.tooFew ? `<span class="dim">${plural(s.decided, "decided finding")}: too few to tell</span>` : `<b>${pctText(s.usefulPct)}</b> useful <span class="dim">of ${s.decided}</span>`}
+    <span class="mx-sub">${s.model ? `<span class="mono">${esc(s.model)}</span> · ` : ""}instructions <span class="mono">${esc(s.instructions || "unknown")}</span> · ${esc(shortDate(s.from))}${s.to.slice(0, 10) !== s.from.slice(0, 10) ? `–${esc(shortDate(s.to))}` : ""}</span>`;
+  return `<h3 class="eyebrow mx-h3">When an agent changed</h3><p class="mx-lede">Agents whose instructions or model changed in ${esc(periodWord())}, and how useful their findings were before and after.</p><div class="table-wrap"><table class="deps-table mx-table">
+    <caption>The latest setup against the one before it</caption>
+    <thead><tr><th scope="col">Agent</th><th scope="col">What changed</th><th scope="col">Before</th><th scope="col">After</th></tr></thead>
+    <tbody>${f.changes.map((c) => `<tr><th scope="row"><span class="mono">${esc(c.agent)}</span></th><td>${esc(cap(joinNames(c.changed.map((x) => (x === "instructions" ? "instructions" : "model")))))}</td><td>${side(c.before)}</td><td>${side(c.after)}</td></tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
+function descriptionHTML(f) {
+  if (!f.description.length) return "";
+  return `<h3 class="eyebrow mx-h3">Description checks</h3><div class="table-wrap"><table class="deps-table mx-table">
+    <caption>Description gaps you asked the author about, or skipped, by rule</caption>
+    <thead><tr><th scope="col">Rule</th><th scope="col" class="num">Asked</th><th scope="col" class="num">Skipped</th><th scope="col">Why skipped</th></tr></thead>
+    <tbody>${f.description.map((d) => `<tr><th scope="row">${esc((DESC_RULES[d.rule] && DESC_RULES[d.rule].title) || d.rule)}</th><td class="num">${d.asked}</td><td class="num">${d.skipped}</td>
+      <td>${d.reasons.length ? d.reasons.map((x) => `${esc(x.reason)} <span class="dim">(${x.count})</span>`).join(" · ") : "–"}</td></tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
+function findingsSectionHTML(r) {
+  const f = r.findings;
+  const t = f.total;
+  const groupWord = METRIC_GROUPS[r.groupBy];
+  if (!t.findings && !f.description.length) return `<section class="mx-sec" aria-labelledby="mx-findings"><h2 class="mx-h" id="mx-findings">Agent findings</h2><p class="dim">No decisions on agent findings in ${periodWord()}.</p></section>`;
+  const lede = t.decided
+    ? `Of the ${plural(t.decided, "finding")} you decided, ${t.useful} ${t.useful === 1 ? "was" : "were"} useful (added to your review, posted or copied), ${t.dismissed} dismissed, and ${t.ignored} ignored (left open when you posted a review).${t.undecided ? ` ${t.undecided} more ${t.undecided === 1 ? "was" : "were"} decided and then undone.` : ""}${t.tooFew ? " That's too few to tell much yet." : ""}`
+    : `No findings decided in ${periodWord()} yet.`;
+  const rw = f.rewording;
+  return `<section class="mx-sec" aria-labelledby="mx-findings"><h2 class="mx-h" id="mx-findings">Agent findings</h2>
+    <p class="mx-lede">${esc(lede)}</p>
+    ${t.findings ? `<p class="mx-lede">Shares are of decided findings; rows with fewer than 10 show counts only. Reworded is the median of how much you changed the agent's text before posting it. Pick ${groupWord === "Agent" ? "an agent" : `a ${groupWord.toLowerCase()}`} to see its findings.</p>
+    <div class="table-wrap"><table class="deps-table mx-table">
+      <caption>Agent findings by ${esc(groupWord.toLowerCase())}, ${esc(periodWord())}</caption>
+      <thead><tr><th scope="col">${esc(groupWord)}</th><th scope="col" class="num">Findings</th><th scope="col" class="num">Useful</th><th scope="col" class="num">Dismissed</th><th scope="col" class="num">Ignored</th><th scope="col" class="num">Undone</th><th scope="col">Top dismiss reason</th><th scope="col" class="num" title="Median rewording of posted findings: 0% as the agent wrote it, 100% rewritten">Reworded</th></tr></thead>
+      <tbody>${f.groups.map((g) => findingRowHTML(g, false)).join("")}</tbody>
+      ${f.groups.length > 1 ? `<tfoot>${findingRowHTML(t, true)}</tfoot>` : ""}
+    </table></div>` : ""}
+    ${rw.posted ? `<p class="mx-lede">You posted ${plural(rw.posted, "finding")} as review comments. Median rewording: <b>${pctText(rw.median)}</b> (0% is the agent's text as it was, 100% fully rewritten); ${rw.unchanged} went out as written and ${rw.rewritten} mostly rewritten.</p>` : ""}
+    ${t.findings ? `<h3 class="eyebrow mx-h3">Severity and confidence</h3>${matrixHTML(f)}` : ""}
+    ${configChangesHTML(f)}
+    ${descriptionHTML(f)}
+  </section>`;
+}
+
+function examplesSheetHTML(key) {
+  const all = (M.data && M.data.report.findings.examples[key]) || [];
+  const counts = { all: all.length };
+  for (const x of all) counts[x.outcome] = (counts[x.outcome] || 0) + 1;
+  const list = M.exFilter === "all" ? all : all.filter((x) => x.outcome === M.exFilter);
+  const tabs = ["all", "useful", "dismissed", "ignored", "undecided"].filter((o) => o === "all" || counts[o]);
+  return `${sheetHead("mx-ex", `Findings: ${esc(key)}`)}
+  <div class="sheet-body">
+    <p class="sheet-lede">${plural(all.length, "finding")} from ${esc(periodWord())}, newest first${all.length >= 100 ? " (the latest 100)" : ""}.</p>
+    <div class="seg mx-ex-seg" role="group" aria-label="Show">${tabs.map((o) => `<button type="button" data-act="mx-ex-filter" data-key="${esc(key)}" data-o="${o}" aria-pressed="${M.exFilter === o}">${o === "all" ? "All" : OUTCOME_WORD[o]} <b>${counts[o]}</b></button>`).join("")}</div>
+    <ul class="mx-ex">${list.map((x) => `<li><span class="pill ${OUTCOME_PILL[x.outcome]}">${OUTCOME_WORD[x.outcome]}</span>
+      <div><b>${esc(x.title || x.id)}</b><span class="dim">${esc(x.pr)} · ${esc(shortDate(x.at))} · ${esc(SEV[x.severity] || x.severity)}, ${esc(x.confidence)}${x.agent !== key ? ` · ${esc(x.agent)}` : ""}</span>
+      <span class="dim">${esc(ACTION_WORD[x.action] || x.action)}${x.reason ? `: ${esc(x.reason)}` : ""}</span></div></li>`).join("") || `<li class="dim">None.</li>`}</ul>
+  </div>`;
+}
+
+/* Agent runs */
+
+function runsSectionHTML(r) {
+  const t = r.runs.total;
+  const groupWord = METRIC_GROUPS[r.groupBy];
+  if (!t.runs) return `<section class="mx-sec" aria-labelledby="mx-runs"><h2 class="mx-h" id="mx-runs">Agent runs</h2><p class="dim">No agent runs in ${periodWord()}.</p></section>`;
+  const failures = (g) => (g.failed ? Object.entries(g.failures).map(([k, n]) => `${n} ${FAILURE_WORD[k] || k}`).join(", ") : "–");
+  const costCell = (g) => `${money(g.costUsd)}${g.costMissing ? ` <span class="dim">(${g.costMissing} not reported)</span>` : ""}`;
+  const perUseful = (g) => (g.costPerUseful != null ? `${money(g.costPerUseful)} <span class="dim">(${g.usefulFindings})</span>` : g.costReported ? `<span class="dim">no useful findings</span>` : "–");
+  return `<section class="mx-sec" aria-labelledby="mx-runs"><h2 class="mx-h" id="mx-runs">Agent runs</h2>
+    <p class="mx-lede">${esc(`Agents ran ${plural(t.runs, "time")} (${t.auto} automatic, ${t.manual} by hand): ${t.finished} finished, ${t.failed} failed and ${t.cancelled} stopped. A run took ${duration(t.msMedian)} at the median.`)}
+      ${t.costUsd != null ? esc(` They cost ${money(t.costUsd)} in all${t.costPerUseful != null ? `, ${money(t.costPerUseful)} per useful finding` : ""}.`) : ""}${t.costMissing ? esc(` ${plural(t.costMissing, "agent run")} didn't report a cost and ${t.costMissing === 1 ? "isn't" : "aren't"} in the totals.`) : ""}
+      Cost per useful finding divides the reported cost by the useful findings from those same runs.</p>
+    <div class="table-wrap"><table class="deps-table mx-table">
+      <caption>Agent runs by ${esc(groupWord.toLowerCase())}, ${esc(periodWord())}</caption>
+      <thead><tr><th scope="col">${esc(groupWord)}</th><th scope="col" class="num">Runs</th><th scope="col">Failed</th><th scope="col" class="num">Median time</th><th scope="col" class="num">Tokens in · cached · out</th><th scope="col">Cost</th><th scope="col">Per useful finding</th><th scope="col">Automatic · by hand</th></tr></thead>
+      <tbody>${r.runs.groups.map((g) => `<tr><th scope="row"><span class="mono">${esc(g.key)}</span></th><td class="num">${g.runs}</td><td>${esc(failures(g))}</td><td class="num">${duration(g.msMedian)}</td>
+        <td class="num">${g.tokens ? `${compact(g.tokens.input)} · ${compact(g.tokens.cachedInput)} · ${compact(g.tokens.output)}${g.tokensReported < g.runs ? ` <span class="dim">(${g.tokensReported} of ${g.runs})</span>` : ""}` : "–"}</td>
+        <td>${costCell(g)}</td><td>${perUseful(g)}</td><td>${g.auto} · ${g.manual}</td></tr>`).join("")}</tbody>
+    </table></div>
+  </section>`;
 }
 
 /* ---------- Rendering and refresh ---------- */
@@ -3351,10 +3611,14 @@ function render() {
   document.body.classList.toggle("is-pr", S.view === "pr");
   app.innerHTML = S.view === "inbox"
     ? inboxHTML()
+    : S.view === "metrics"
+    ? metricsHTML()
     : `${ribbonHTML()}${topbarHTML()}<main class="page" id="main">${prHeadHTML()}<div id="tab">${tabHTML()}</div></main>${dockHTML()}${tourHTML()}`;
   mountDiagrams();
   refreshTour();
   onScroll();
+  // The report is read fresh each time it's shown.
+  if (S.view === "metrics") loadMetrics();
 }
 
 function refreshTab() { const el = $("#tab"); if (el) el.innerHTML = tabHTML(); mountDiagrams(); refreshTour(); onScroll(); }
@@ -3450,7 +3714,7 @@ function setView(view) {
   closeSheet(true);
   render();
   window.scrollTo(0, 0);
-  setHash(view === "inbox" ? "inbox" : S.tab);
+  setHash(view === "pr" ? S.tab : view);
 }
 
 function setTab(tab) {
@@ -4097,6 +4361,35 @@ function cycleTheme() {
 
 const ACTIONS = {
   inbox: () => setView("inbox"),
+  metrics: () => setView("metrics"),
+  "mx-period": (el) => {
+    M.days = el.dataset.days === "all" ? null : Number(el.dataset.days);
+    saveMetricPrefs();
+    loadMetrics();
+  },
+  "mx-group": (el) => {
+    M.groupBy = el.dataset.by;
+    saveMetricPrefs();
+    loadMetrics();
+  },
+  "mx-examples": (el) => {
+    M.exFilter = "all";
+    openSheet("mx-ex", examplesSheetHTML(el.dataset.key), "side");
+  },
+  "mx-ex-filter": (el) => {
+    M.exFilter = el.dataset.o;
+    const sheet = $("#sheet-mx-ex");
+    if (sheet) sheet.innerHTML = examplesSheetHTML(el.dataset.key);
+    const btn = sheet && sheet.querySelector(`[data-act="mx-ex-filter"][data-o="${el.dataset.o}"]`);
+    if (btn) btn.focus();
+  },
+  "mx-export": (el) => {
+    const format = el.dataset.format;
+    HOST.metricsExport({ format, days: M.days }).then(
+      (res) => { if (res && res.saved) toast(`Exported ${format === "csv" ? "the finding outcomes" : "the review metrics"} to ${res.saved.split(/[\\/]/).pop()}`); },
+      (err) => toast(`Couldn't export: ${err.message || err}`),
+    );
+  },
   "open-live-pr": (el) => {
     if (el.dataset.key === LIVE_KEY) { S.tab = "changes"; setView("pr"); return; }
     const go = () => HOST.open(el.dataset.key);
@@ -4443,6 +4736,7 @@ if (wide.addEventListener) {
 function routeFromHash() {
   const h = (location.hash || "").slice(1);
   if (h === "inbox" || (!h && LIVE.startView === "inbox")) S.view = "inbox";
+  else if (h === "metrics" || (!h && LIVE.startView === "metrics")) S.view = "metrics";
   else if (["changes", "map", "discussion", "workflow"].includes(h)) { S.view = "pr"; S.tab = h; }
 }
 window.addEventListener("hashchange", () => { tickActive(); routeFromHash(); render(); });
@@ -4463,7 +4757,9 @@ window.addEventListener("diffline-host", (e) => {
     }
     return;
   }
-  if (S.view === "inbox") render(); else setView("inbox");
+  // "metrics": Diffline: Show Review Metrics, which reads the numbers afresh.
+  const view = m.view === "metrics" ? "metrics" : "inbox";
+  if (S.view === view) render(); else setView(view);
   window.scrollTo(0, 0);
 });
 

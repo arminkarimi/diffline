@@ -310,6 +310,16 @@ export class MetricsLog {
     return ix;
   }
 
+  /** Whether new events are written (diffline.metrics.enabled). */
+  get on(): boolean {
+    return this.enabled();
+  }
+
+  /** The log's text, after anything already queued is written; empty when there's no log yet. */
+  read(): Promise<string> {
+    return this.then(() => readFile(this.file, "utf8").catch((err) => (err && err.code === "ENOENT" ? "" : Promise.reject(err))));
+  }
+
   /** Delete the log, after anything already queued is written. Resolves true when there was one. */
   delete(): Promise<boolean> {
     return this.then(async () => {

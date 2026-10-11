@@ -345,6 +345,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
   });
   command("diffline.showLog", () => output.show(true));
   command("diffline.openHome", () => panel.showHome());
+  command("diffline.showMetrics", () => panel.showMetrics());
   command("diffline.groupBy", async () => {
     const current = readSidebar().groupBy;
     const pick = await vscode.window.showQuickPick(

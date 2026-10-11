@@ -51,11 +51,17 @@ export const Uri = {
   file: (fsPath: string) => ({ fsPath }),
   joinPath: (base: { fsPath: string }, ...parts: string[]) => ({ fsPath: path.join(base.fsPath, ...parts) }),
 };
+/** What the next save dialog answers (undefined: cancelled), and the options each one was opened with. */
+export const saveDialog: { answer: { fsPath: string } | undefined; opened: any[] } = { answer: undefined, opened: [] };
 export const window = {
   createWebviewPanel: () => {
     const panel = new FakePanel();
     created.push(panel);
     return panel;
+  },
+  showSaveDialog: async (opts: unknown) => {
+    saveDialog.opened.push(opts);
+    return saveDialog.answer;
   },
 };
 export const commands = {
