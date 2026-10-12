@@ -17,8 +17,8 @@ Every feature is described in [Features](https://github.com/arminkarimi/diffline
 
 Diffline isn't on the Marketplace yet. Install the `.vsix` file, from a [release](https://github.com/arminkarimi/diffline/releases) or built with `npm run package` (see [Development](#development)):
 
-- In VS Code: open the Extensions view, then **…** → **Install from VSIX…**, and pick `diffline-0.2.0.vsix`.
-- Or in a terminal: `code --install-extension diffline-0.2.0.vsix`.
+- In VS Code: open the Extensions view, then **…** → **Install from VSIX…**, and pick `diffline-0.2.1.vsix`.
+- Or in a terminal: `code --install-extension diffline-0.2.1.vsix`.
 
 Reload the window if VS Code asks. To update, install the newer `.vsix` the same way. To remove Diffline, uninstall it from the Extensions view; `~/.diffline` stays until you delete it.
 
