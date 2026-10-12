@@ -75,9 +75,17 @@ Two kinds of lock:
 
 ### Automatic runs
 
-`scheduleAutomaticRuns()` runs after each refresh, in the leader window only, when `diffline.agents.autoRun` is on. A pull request gets a run when it requests your review by name, is open, isn't a draft (with `skipDrafts`), the agents haven't reviewed its head, it's under the automatic-run limit, and it's not over the file or line limit. Too-large pull requests are marked `held`.
+`scheduleAutomaticRuns()` runs after each refresh, in the leader window only, when `diffline.agents.autoRun` is on. A pull request gets a run when it requests your review by name, is open, isn't a draft (with `skipDrafts`), the agents haven't reviewed its head, it's under the automatic-run limit, and it's not over the file or line limit. Too-large pull requests are marked `held` (`hold: "large"`), and approved ones can be held too (below).
 
 A scheduled run waits until the quiet period after the head was first seen has passed. A 10-second timer starts the runs that are due. Automatic run counts per pull request are kept in `globalState`.
+
+**Approved pull requests.** After the size check, `holdApproved()` asks `approvedBy()` (and `isApproved()`) in `src/core/service.ts`, which read the summary's `latestReviews`: each reviewer's latest approval or change request, from `latestOpinionatedReviews` in the list query. A pull request is approved when at least one is `APPROVED` and none is `CHANGES_REQUESTED`; dismissed reviews and comments don't count. GitHub's overall `reviewDecision` isn't fetched, because it slows the search. `diffline.agents.approvedPullRequests` decides what happens: `run` schedules the run as on any pull request, `skip` marks it `held` with `hold: "approved-skip"`, and `ask` (the default) marks it `held` with `hold: "approved-ask"`, unless the choice remembered for the pull request says skip or run. The hold's note shows on the sidebar row and, as `LiveData.runNote`, on the page. Each held head is logged once as a [`skipped` run event](#the-log).
+
+Choices are kept in `globalState` under `approvedRuns`, by lowercase pull request key: `choice` (`skip` or `run`), `asked` (the head last asked about), `logged` (the head whose skipped run was logged) and `at`. `at` is touched at most once a day while the pull request is listed and approved, and entries untouched for 90 days are dropped when the map is saved.
+
+The service emits `approvedHeld` with the pull requests to ask about, once per head. The extension queues them and shows one notification at a time. For one pull request it offers **Skip this PR**, **Run anyway** or **Always skip approved**, which sets the setting to `skip` globally; dismissing it leaves the run held. For several, one notification offers **Review them** (a multi-select quick pick of the ones to run) or **Always skip approved**. Pull requests held while a notification is open wait for it, and ones that changed meanwhile (run by hand, no longer approved, setting changed) are dropped. **Skip this PR** and **Run anyway** call `chooseForApproved()`, which saves the choice, schedules again, and for **Run anyway** starts the run.
+
+After each refresh, `offerStops()` emits `approvedWhileRunning` once per run for a queued or running run in this window whose pull request is approved now but wasn't when the run started (`approvedAtStart`), unless the setting is `run`. The extension offers **Stop** or **Let them finish**; **Stop** cancels the run if it's still the one it asked about. The `diffline.runAgents` command, after its check for an unchanged pull request, asks for a modal confirm on an approved pull request unless the setting is `run`.
 
 ### A run
 
@@ -283,8 +291,9 @@ Every line has `v` (1, the schema version), `at` (when, ISO 8601), `pr` (`owner/
 | `description` | `asked`, `skipped`, `undone` | `rule`, `descKind` (`feature` or `fix`), `agent` (the guide), `reason`: the skip reason, or for `undone` what was undone. |
 | `review` | `submitted` | `review`: `event` (`approve`, `changes` or `comment`), `own` (the reviewer wrote the pull request), `comments` (inline comments and replies posted), `fromFindings` (of those, drafts from findings), `reviewed` and `hunks` (hunks marked reviewed, of all), `agents` (an agent review existed), `activeMs` (time the page was focused and in use for this pull request since it opened or the last review posted; a minute without input counts as idle), `round` (1 for the first review of the pull request in the log), `newPush` (the head differs from the previous review's). |
 | `run` | `finished`, `failed`, `cancelled` | `trigger` (`auto` or `manual`), `ms`, and `agents`: per agent, including the lede, `id`, `harness`, `model`, `thinking` (Pi), `instructions` (`null` for the lede), `ms`, `tokens` (`input`, `cachedInput`, `output`, or `null`), `costUsd` (`null` when the harness doesn't report it), `findings`, and `failed` (`missing`, `auth`, `timeout`, `cancelled`, `failed` or `badOutput`) when it failed. |
+| `run` | `skipped` | An automatic run that didn't start: `reason` (`approved`), `trigger` (`auto`), `agents` (empty). `run` is `null`. |
 
-When each is written: `added` when a finding goes into the review (**Add to my review**, or a composer draft from it), `dismissed` with its reason, `copied`, `undone` when a decision is taken back, and, when a review posts, `posted` for each draft from a finding and `left-open` for each finding of the current run still undecided, then one `review` event. Description rules log `asked`, `skipped` and `undone`. `runAgents()` writes a `run` event after every run that got past its checks, however it ends.
+When each is written: `added` when a finding goes into the review (**Add to my review**, or a composer draft from it), `dismissed` with its reason, `copied`, `undone` when a decision is taken back, and, when a review posts, `posted` for each draft from a finding and `left-open` for each finding of the current run still undecided, then one `review` event. Description rules log `asked`, `skipped` and `undone`. `runAgents()` writes a `run` event after every run that got past its checks, however it ends. Scheduling writes a `skipped` run event (`recordSkippedRun()`) once per pull request and head when it holds an automatic run because the pull request is approved.
 
 A dismissed finding, on one line in the file:
 
@@ -300,7 +309,7 @@ A dismissed finding, on one line in the file:
 - **Outcomes.** `findingOutcomes()` takes each finding's last event per pull request and finding id: the last event wins. `added`, `posted` and `copied` make it useful, `dismissed` dismissed (with the reason), `left-open` ignored, and `undone` undecided. Decided findings are the useful, dismissed and ignored ones. A finding counts in the period its last event falls in. A group with fewer than 10 decided findings says "too few to tell" instead of percentages.
 - **Agent findings**: the outcomes by group, severity by confidence, rewording (the median `edit` of posted findings), description rules asked and skipped with the skip reasons, each group's findings, and, for an agent whose instructions hash or model changed in the period, its latest setup against the one before.
 - **Your reviews**: `review` events per ISO week by decision, with the median active time, coverage (`reviewed / hunks`), later rounds, new pushes, and comments split into the reviewer's own and those from findings.
-- **Agent runs**: per group, runs, failures by kind, median duration, tokens, cost, and cost per useful finding: the cost of the runs that reported one, over the useful findings from those runs (matched by pull request, run and agent). Codex reports no cost, so its runs count as missing.
+- **Agent runs**: per group, runs, failures by kind, median duration, tokens, cost, and cost per useful finding: the cost of the runs that reported one, over the useful findings from those runs (matched by pull request, run and agent). Codex reports no cost, so its runs count as missing. `skipped` run events aren't runs: they're counted apart as `skippedApproved`, which the page shows as "Skipped (approved)".
 
 The page draws the result. **Export** asks for `metricsExport({ format, days })`: `exportText()` returns the period's raw events as JSON (`{ v, exportedAt, since, events }`) or one CSV row per finding outcome (date, pull request, finding id, agent, harness, model, thinking, severity, confidence, outcome, reason, edit), with cells that start with `=`, `+`, `-` or `@` prefixed so spreadsheets don't run them. The panel writes the file where the reviewer picks, at mode 0600.
 
@@ -321,7 +330,7 @@ The extension's global storage (on macOS, `~/Library/Application Support/Code/Us
 
 JSON files are written to a temporary file and renamed, and writes to one file are queued, so an older save never lands after a newer one. A file that doesn't parse is set aside as `<file>.damaged`.
 
-`globalState` holds the last list (`lastList`), pull requests opened by hand (`pinned`) and automatic run counts (`autoRuns`). Agent settings are in `~/.diffline`.
+`globalState` holds the last list (`lastList`), pull requests opened by hand (`pinned`), automatic run counts (`autoRuns`) and the choices about approved pull requests (`approvedRuns`, see [Automatic runs](#automatic-runs)). Agent settings are in `~/.diffline`.
 
 ## Security model
 

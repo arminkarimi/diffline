@@ -140,9 +140,12 @@ Limits keep automatic runs cheap and predictable:
 - Drafts are skipped.
 - At most 5 automatic runs per pull request.
 - Pull requests over 100 files or 5,000 changed lines wait for you to press Run.
+- Approved pull requests ask first (see below).
 - At most 5 agent processes at once on your computer, and a 20-minute limit per agent.
 
 Every limit is a setting. Any pull request can be run by hand. When the agents already reviewed the latest commit and nothing changed on GitHub since, Run asks before reviewing again.
+
+**Approved pull requests.** A pull request counts as approved when someone's latest review approves it and nobody's latest review requests changes. Its agents' review may not be needed, so by default an automatic run on it waits, and Diffline asks once per push: **Skip this PR**, **Run anyway** or **Always skip approved**. Skip this PR and Run anyway are remembered for the pull request, so later pushes don't ask again. Several waiting at once get one notification, and **Review them** picks which to run. The sidebar row and the review page say why the run waits. `diffline.agents.approvedPullRequests` is `ask` by default; `skip` skips without asking, and `run` runs them like any other. Unless it's `run`, Run on an approved pull request asks to confirm, and a run that's going when the pull request gets approved offers **Stop**.
 
 With several VS Code windows open, one window starts the automatic runs, and a pull request's agents run in one window at a time. The others show "running in another window".
 
@@ -162,7 +165,7 @@ Not supported yet: comments that span several lines, file-level comments, and ed
 
 - **Your reviews.** Reviews per week, by decision. The time the page was in use per review, how much of each diff you marked reviewed, how many reviews were later rounds or followed a new push, and your own comments next to those that came from agent findings.
 - **Agent findings.** For each agent, the share of its findings you used (added to your review, posted or copied), dismissed, or left open when you posted a review. Dismissals show their most common reason. An agent with fewer than 10 decided findings says "too few to tell". Below that: severity by confidence, how much you reworded findings before posting, the description rules you asked about or skipped and why, how an agent did before and after its instructions or model changed, and each finding with its outcome.
-- **Agent runs.** Failures, duration, tokens and cost, and cost per useful finding, for automatic and manual runs.
+- **Agent runs.** Failures, duration, tokens and cost, and cost per useful finding, for automatic and manual runs. **Skipped (approved)** counts the automatic runs that didn't start because the pull request was already approved.
 
 The agent tables can be grouped by agent, harness, model or Pi's thinking level, so you can compare one setup with another. **Export CSV** saves one row per finding and its outcome; **Export JSON** saves the raw events.
 
