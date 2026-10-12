@@ -14,6 +14,44 @@ import { buildPage, hostShim } from "./page.ts";
 
 const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
+export interface AgentReviewExport {
+  chars: number;
+  findings: number;
+  total: number;
+  copied: boolean;
+  /** The file it was saved to; null when the save dialog was cancelled or it was copied. */
+  saved: string | null;
+}
+
+/**
+ * A pull request's agent review as Markdown for another agent: copied to the clipboard (all findings, or the open ones
+ * only), or saved where the reader picks. From the review page's menu and the Copy Agent Review command.
+ */
+export async function exportAgentReview(
+  service: Pick<DifflineService, "agentReviewMarkdown">,
+  key: PrKey,
+  mode: "copy" | "open" | "save",
+  log: (line: string) => void,
+): Promise<AgentReviewExport> {
+  const out = await service.agentReviewMarkdown(key, { openOnly: mode === "open" });
+  const base = { chars: out.markdown.length, findings: out.findings, total: out.total };
+  if (mode === "save") {
+    const uri = await vscode.window.showSaveDialog({
+      title: `Save ${prKeyString(key)}'s agent review as Markdown`,
+      defaultUri: vscode.Uri.file(path.join(os.homedir(), out.name)),
+      filters: { Markdown: ["md"] },
+      saveLabel: "Save",
+    });
+    if (!uri) return { ...base, copied: false, saved: null };
+    await writeFile(uri.fsPath, out.markdown, { encoding: "utf8", mode: 0o600 });
+    log(`Saved ${prKeyString(key)}'s agent review to ${uri.fsPath}`);
+    return { ...base, copied: false, saved: uri.fsPath };
+  }
+  await vscode.env.clipboard.writeText(out.markdown);
+  log(`Copied ${prKeyString(key)}'s agent review: ${out.findings} of ${out.total} findings, ${out.markdown.length} characters`);
+  return { ...base, copied: true, saved: null };
+}
+
 export class ReviewPanel {
   private panel: vscode.WebviewPanel | null = null;
   private current: PrKey | null = null;
@@ -200,6 +238,14 @@ export class ReviewPanel {
         answer(true, m.type === "metricsReport" ? await this.service.metricsReport({ days: m.days, groupBy: m.groupBy }) : await this.exportMetrics(m.format, m.days));
       } catch (err) {
         answer(false, err instanceof Error ? err.message : String(err));
+      }
+    } else if (m.type === "agentMarkdown") {
+      const mode = m.mode === "open" || m.mode === "save" ? m.mode : "copy";
+      try {
+        const data = await exportAgentReview(this.service, key, mode, this.log);
+        void this.panel?.webview.postMessage({ type: "api-result", id: m.id, ok: true, data });
+      } catch (err) {
+        void this.panel?.webview.postMessage({ type: "api-result", id: m.id, ok: false, error: err instanceof Error ? err.message : String(err) });
       }
     } else if (m.type === "metrics") {
       // Taken in the order the page sent them; the log keeps that order.

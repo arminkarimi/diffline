@@ -64,6 +64,15 @@ export const window = {
     return saveDialog.answer;
   },
 };
+/** What the extension last put on the clipboard. */
+export const env = {
+  clipboard: {
+    text: "",
+    async writeText(text: string) {
+      env.clipboard.text = text;
+    },
+  },
+};
 export const commands = {
   executeCommand: async (...args: unknown[]) => void executed.push(args),
 };

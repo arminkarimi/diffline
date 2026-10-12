@@ -1246,6 +1246,31 @@ textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px
 .brief-title code { background: var(--sheet); }
 .brief-head .icon-btn .i { transition: transform .2s; }
 .brief.is-closed .brief-head .icon-btn .i { transform: rotate(-90deg); }
+/* Copy for an agent: a button with a small menu of ways to export the agent review. */
+.split-btn { position: relative; display: inline-flex; flex: none; }
+.split-btn > .btn:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split-btn .sb-caret { padding-inline: 6px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.split-btn .sb-caret .i { width: 14px; height: 14px; }
+.split-btn .sb-caret[aria-expanded="true"] { background: var(--sheet-3); color: var(--ink); }
+.menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 40; display: grid; min-width: 270px; padding: 4px;
+  background: var(--sheet); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-2);
+}
+.menu[hidden] { display: none; }
+.menu-item {
+  display: grid; gap: 1px; width: 100%; padding: 7px 10px; text-align: left; border: 0; border-radius: var(--r-btn);
+  background: none; color: var(--ink); font: inherit; font-size: 13px; cursor: pointer;
+}
+.menu-item b { font-weight: 620; }
+.menu-item span { font-size: 12px; color: var(--ink-2); }
+.menu-item:hover, .menu-item:focus-visible { background: var(--sheet-3); outline: none; }
+@media (max-width: 699px) {
+  /* The briefing's buttons go under its title, so the title keeps the width; the collapse toggle stays beside it. */
+  .brief-head { flex-wrap: wrap; row-gap: 8px; }
+  .brief-title { flex-basis: calc(100% - 104px); }
+  .brief-head .split-btn, .brief-head [data-act="host-run-agents"] { order: 1; }
+  .menu { right: auto; left: 0; min-width: min(270px, calc(100vw - 48px)); }
+}
 .brief-lede { max-width: 70ch; margin: 0; }
 .brief-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin: 0; padding: 0; list-style: none; }
 .brief-item {

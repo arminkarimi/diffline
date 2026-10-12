@@ -288,9 +288,24 @@ export interface AgentFile {
 export type ReviewState = Record<string, unknown> & {
   drafts?: unknown[];
   reviewedIds?: string[];
-  /** Finding id → the decision; `run` is the agent file's ranAt it was made on (missing on older decisions). */
-  findings?: Record<string, { state?: string; run?: string; title?: string }>;
+  /**
+   * Finding id → the decision: "accepted" (with the draft it became, gone from drafts once posted) or "dismissed" (with
+   * the reason). `run` is the agent file's ranAt it was made on (missing on older decisions).
+   */
+  findings?: Record<string, { state?: string; run?: string; title?: string; reason?: string; draft?: string }>;
+  /** Description rule → the reviewer's decision on a gap: asked (posted once a review with it went out) or skipped. */
+  desc?: Record<string, { state?: string; reason?: string; posted?: boolean }>;
 };
+
+/**
+ * Whether the saved state decided a finding. Positional ids from before ids were stable ("f1", "f2", …) count only
+ * when the decision names the run it was made on, which older decisions don't.
+ */
+export function decided(state: { findings?: Record<string, { state?: string; run?: string }> } | null, id: string, ranAt: string | undefined): boolean {
+  const d = state?.findings?.[id];
+  if (!d || !d.state) return false;
+  return !/^f\d+$/.test(id) || (!!d.run && d.run === ranAt);
+}
 
 /* ---------- The page's live data (window.DIFFLINE_LIVE) ---------- */
 

@@ -1689,6 +1689,47 @@ const hostRunHTML = (label) => `<button type="button" class="btn sm ghost" data-
 // Why an automatic run is held back (a large or an approved pull request), from the extension.
 const runNoteHTML = () => (LIVE.runNote ? `<p>${esc(LIVE.runNote)}</p>` : "");
 
+// The agent review as Markdown, with git references, to paste into another agent. The extension builds it from the
+// agent review and the saved decisions, and copies or saves it; the page only asks.
+const canCopyAgentReview = () => !!(HOST && typeof HOST.agentMarkdown === "function");
+function agentCopyHTML() {
+  if (!canCopyAgentReview()) return "";
+  const item = (mode, title, text) => `<button type="button" role="menuitem" class="menu-item" data-act="agent-md" data-mode="${mode}"><b>${title}</b><span>${text}</span></button>`;
+  return `<div class="split-btn" id="agent-copy">
+      <button type="button" class="btn sm ghost" data-act="agent-md" data-mode="copy" title="Copy every finding as Markdown, with git references, to paste into another agent">${icon("copy")}<span class="sb-label">Copy for an agent</span></button>
+      <button type="button" class="btn sm ghost sb-caret" data-act="agent-md-menu" aria-haspopup="menu" aria-expanded="false" aria-controls="agent-copy-menu" aria-label="More ways to copy the agent review">${icon("chev")}</button>
+      <div class="menu" id="agent-copy-menu" role="menu" aria-label="Copy the agent review" hidden>
+        ${item("copy", "Copy all findings", "Every finding, with git references")}
+        ${item("open", "Copy open findings only", "Leaves out dismissed ones and ones in your review")}
+        ${item("save", "Save as Markdown…", "The same, as a file")}
+      </div></div>`;
+}
+
+const agentMenuOpen = () => { const m = $("#agent-copy-menu"); return !!(m && !m.hidden); };
+function agentMenu(open) {
+  const menu = $("#agent-copy-menu"), caret = $("#agent-copy .sb-caret");
+  if (!menu || !caret) return;
+  menu.hidden = !open;
+  caret.setAttribute("aria-expanded", String(open));
+  if (open) { const first = menu.querySelector(".menu-item"); if (first) first.focus(); }
+}
+
+async function copyAgentReview(mode) {
+  const caret = $("#agent-copy .sb-caret");
+  if (agentMenuOpen()) { agentMenu(false); if (caret) caret.focus(); }
+  // The extension reads the decisions from the saved state: save a change that's still waiting first.
+  if (liveSync === "saving") await flushLiveState();
+  try {
+    const res = await HOST.agentMarkdown({ mode });
+    if (!res) return;
+    const what = `${num(res.chars)} characters for ${plural(res.findings, "finding")}`;
+    if (mode === "save") { if (res.saved) toast(`Saved ${what} to ${res.saved.split(/[\\/]/).pop()}`); return; }
+    toast(res.findings || !res.total ? `Copied ${what}` : `Copied ${num(res.chars)} characters. Every finding is decided, so none are listed.`);
+  } catch (err) {
+    toast(`Couldn't ${mode === "save" ? "save" : "copy"} the agent review: ${err.message || err}`);
+  }
+}
+
 function briefHTML() {
   if (!FIND.length && !CHECKED.length && !DESC_ITEMS.length) {
     return `<section class="brief is-closed" id="brief" aria-label="Agent review"><header class="brief-head">${agentAv("lg")}<div class="brief-title"><h2>No agent review yet</h2>
@@ -1697,6 +1738,7 @@ function briefHTML() {
   const decided = FIND.length - openFindings().length;
   const head = `<header class="brief-head">${agentAv("lg")}<div class="brief-title"><h2>Agents reviewed this before you</h2>
       <p>${AGENTS.length} agents ran on <code>${esc(String((AG && AG.commit) || "").slice(0, 7))}</code> ${AGENT_RUN_AT ? ago(AGENT_RUN_AT) : ""} · ${plural(FIND.length, "finding")}${decided ? `, ${decided} decided` : ""}${agentsBehind() ? ` · <b>an older push than the one you're reviewing</b>` : ""}</p>${runNoteHTML()}</div>
+      ${agentCopyHTML()}
       ${hostRunHTML(agentsBehind() ? "Run again" : "Rerun")}
       <button type="button" class="icon-btn sm" data-act="brief-toggle" aria-expanded="${S.brief}" aria-label="${S.brief ? "Collapse" : "Expand"} the agent briefing">${icon("chev")}</button></header>`;
   if (!S.brief) return `<section class="brief is-closed" id="brief" aria-label="Agent review">${head}</section>`;
@@ -4434,6 +4476,8 @@ const ACTIONS = {
     if (liveSync === "saving") flushLiveState().then(go, go); else go();
   },
   "live-refresh": () => refreshLive(),
+  "agent-md-menu": () => agentMenu(!agentMenuOpen()),
+  "agent-md": (el) => copyAgentReview(el.dataset.mode),
   "host-run-agents": () => {
     HOST.runAgents();
     toast("The agents are running. Diffline tells you when they finish.");
@@ -4618,6 +4662,7 @@ const ACTIONS = {
 
 let lastSwipe = 0;
 document.addEventListener("click", (e) => {
+  if (agentMenuOpen() && !e.target.closest("#agent-copy")) agentMenu(false);
   if (Date.now() - lastSwipe < 350) return;
   const el = e.target.closest("[data-act]");
   if (el && !el.disabled) {
@@ -4639,6 +4684,19 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key === "Enter") {
     if (t.id === "composer-text") { e.preventDefault(); submitComposer(); return; }
     if (S.sheet && S.sheet.id === "finish") { e.preventDefault(); return; }
+  }
+  if (agentMenuOpen() && t.closest("#agent-copy")) {
+    if (e.key === "Escape") { e.preventDefault(); agentMenu(false); const c = $("#agent-copy .sb-caret"); if (c) c.focus(); return; }
+    const items = $$("#agent-copy-menu .menu-item");
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items[(i + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length].focus();
+      return;
+    }
+    if (e.key === "Home" || e.key === "End") { e.preventDefault(); items[e.key === "Home" ? 0 : items.length - 1].focus(); return; }
+    if (e.key === "Tab") agentMenu(false);
+    return;
   }
   if (e.key === "Escape") {
     if (S.sheet) { e.preventDefault(); if (S.sheet.id === "composer") closeComposer(); else closeSheet(); return; }

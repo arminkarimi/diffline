@@ -244,3 +244,62 @@ test("ReviewPanel: the page asks for the metrics report and exports, and gets an
   assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: page.sent.at(-1).id, ok: false, error: "disk on fire" });
   panel.dispose();
 });
+
+test("ReviewPanel: the page asks for the agent review as Markdown; the extension copies or saves it", async () => {
+  const { service } = fakeService((key) => Promise.resolve(review(key)));
+  const asked: Array<{ key: string; openOnly: boolean }> = [];
+  (service as any).agentReviewMarkdown = async (key: Key, opts: { openOnly?: boolean }) => {
+    asked.push({ key: prKeyString(key), openOnly: !!opts.openOnly });
+    return { markdown: opts.openOnly ? "# open\n" : "# all of it\n", findings: opts.openOnly ? 1 : 3, total: 3, name: "o-r-1-agent-review.md" };
+  };
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, () => undefined);
+  await panel.show(A);
+  const webview = fake.created.at(-1)!.webview;
+  const page = runPage(webview.html);
+
+  void page.host.agentMarkdown({ mode: "copy" });
+  const req = page.sent.at(-1);
+  assert.deepEqual({ type: req.type, key: req.key, mode: req.mode }, { type: "agentMarkdown", key: "o/r#1", mode: "copy" });
+  webview.receive(req);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(fake.env.clipboard.text, "# all of it\n");
+  assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: req.id, ok: true, data: { chars: 12, findings: 3, total: 3, copied: true, saved: null } });
+
+  void page.host.agentMarkdown({ mode: "open" });
+  webview.receive(page.sent.at(-1));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(fake.env.clipboard.text, "# open\n");
+  assert.equal(webview.posted.at(-1).data.findings, 1);
+
+  // Save: written where the save dialog says, readable only by the user; the clipboard is left alone.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "diffline-agent-md-"));
+  fake.saveDialog.answer = { fsPath: path.join(dir, "review.md") };
+  void page.host.agentMarkdown({ mode: "save" });
+  webview.receive(page.sent.at(-1));
+  await new Promise((r) => setTimeout(r, 20));
+  const { readFile, stat } = await import("node:fs/promises");
+  assert.equal(await readFile(path.join(dir, "review.md"), "utf8"), "# all of it\n");
+  assert.equal((await stat(path.join(dir, "review.md"))).mode & 0o777, 0o600);
+  assert.deepEqual(fake.saveDialog.opened.at(-1).filters, { Markdown: ["md"] });
+  assert.match(fake.saveDialog.opened.at(-1).defaultUri.fsPath, /o-r-1-agent-review\.md$/);
+  assert.deepEqual(webview.posted.at(-1).data, { chars: 12, findings: 3, total: 3, copied: false, saved: path.join(dir, "review.md") });
+  assert.equal(fake.env.clipboard.text, "# open\n");
+
+  fake.saveDialog.answer = undefined;
+  void page.host.agentMarkdown({ mode: "save" });
+  webview.receive(page.sent.at(-1));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(webview.posted.at(-1).data.saved, null);
+
+  // An unknown mode copies everything; a failure reaches the page as an error.
+  void page.host.agentMarkdown({ mode: "rm -rf" });
+  webview.receive(page.sent.at(-1));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(asked.map((a) => a.openOnly), [false, true, false, false, false]);
+  (service as any).agentReviewMarkdown = async () => { throw new Error("o/r#1 has no agent review yet."); };
+  void page.host.agentMarkdown({ mode: "copy" });
+  webview.receive(page.sent.at(-1));
+  await settle();
+  assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: page.sent.at(-1).id, ok: false, error: "o/r#1 has no agent review yet." });
+  panel.dispose();
+});

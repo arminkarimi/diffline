@@ -359,3 +359,54 @@ test("a run in progress on a pull request that gets approved offers to stop once
     setGhRunner(null);
   }
 });
+
+test("agentReviewMarkdown: lines from the reviewed commit, rebuilt when the pull request moved on, and the page's decisions", async () => {
+  const head = "f53a7f581b5c4afa889751cbb4daf6d06871aebe";
+  const older = "17b83e24937d09bf70b34ca1e8c16a2ed7172156"; // the sample's last-review tag
+  const base = "7e6a0998253a65947c5d2c7edee58f1e6429bc31";
+  let has = true;
+  const repos = {
+    reset() {},
+    resolve: async () => ({ path: SAMPLE, remote: "origin", managed: false }),
+    ensureCommits: async () => ({ fetched: false }),
+    hasCommit: async () => has,
+  };
+  const service = await makeService({ repos });
+  (service as any).version = "1.2.3";
+  const key = { owner: "acme", name: "web", number: 12 };
+  const pr = { title: "Add promo codes at checkout", url: "https://github.com/acme/web/pull/12", author: { login: "alex-doe", name: null }, baseRefOid: base, headRefOid: head, baseRefName: "main", headRefName: "feature/promo-codes", lastReview: null };
+  (service as any).detail = async () => ({ viewer: { login: "me", name: null }, pr, threads: [] });
+  await assert.rejects(service.agentReviewMarkdown(key), /acme\/web#12 has no agent review yet/);
+
+  const agent = JSON.parse(await readFile(new URL("./fixtures/agent-file.json", import.meta.url), "utf8"));
+  await service.store.writeAgent(key, agent);
+  await service.store.writeState(key, { findings: { [agent.findings[3].id]: { state: "dismissed", reason: "Out of scope", run: agent.ranAt } } });
+  const now = new Date("2026-10-12T00:00:00Z");
+  const all = await service.agentReviewMarkdown(key, { now });
+  assert.equal(all.name, "acme-web-12-agent-review.md");
+  assert.deepEqual([all.findings, all.total], [5, 5]);
+  assert.match(all.markdown, new RegExp(`\\[permalink\\]\\(https://github.com/acme/web/blob/${head}/src/checkout/checkout.ts#L54\\)`));
+  assert.match(all.markdown, /Status: dismissed \(Out of scope\)/);
+  assert.match(all.markdown, /Exported by Diffline 1\.2\.3 on 2026-10-12\./);
+  const open = await service.agentReviewMarkdown(key, { openOnly: true });
+  assert.deepEqual([open.findings, open.total], [4, 5]);
+
+  // The agents reviewed an older push: the diff at that commit is built from the clone (and cached), so line numbers
+  // and permalinks are in the reviewed commit.
+  await service.store.writeAgent(key, { ...agent, commit: older, findings: [{ ...agent.findings[2] }] });
+  const moved = await service.agentReviewMarkdown(key);
+  assert.match(moved.markdown, new RegExp(`- Reviewed commit \\(the head when the agents ran\\): \`${older}\``));
+  assert.match(moved.markdown, new RegExp(`- Current head: \`${head}\`. The pull request moved on`));
+  assert.match(moved.markdown, new RegExp(`- Merge base: \`${base}\``));
+  assert.match(moved.markdown, new RegExp(`\`src/cart/cart.ts:34\` \\(removed line, base side\\) · \\[permalink\\]\\(https://github.com/acme/web/blob/${base}/src/cart/cart.ts#L34\\)`));
+  assert.ok(await service.store.findReviewData(key, older), "the rebuilt diff is cached");
+
+  // Without that commit in the clone or the cache, findings keep their paths and quoted lines, without numbers.
+  has = false;
+  await service.store.writeAgent(key, { ...agent, commit: "e".repeat(40) });
+  const lost = await service.agentReviewMarkdown(key);
+  assert.match(lost.markdown, /Merge base: not known here/);
+  assert.doesNotMatch(lost.markdown, /\]\(https:\/\/github\.com\/acme\/web\/blob\//);
+  assert.match(lost.markdown, /\*\*Location\*\*: `src\/checkout\/checkout\.ts` \(the line isn't in the diff/);
+  service.dispose();
+});

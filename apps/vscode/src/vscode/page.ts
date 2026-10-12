@@ -47,6 +47,8 @@ export function hostShim(key: string): string {
     // The review metrics report for a period ({ days: 7 | 30 | 90 | null, groupBy }), and its exports through a save dialog.
     metricsReport(o) { return ask({ type: "metricsReport", days: o && o.days, groupBy: o && o.groupBy }); },
     metricsExport(o) { return ask({ type: "metricsExport", format: o && o.format, days: o && o.days }); },
+    // The agent review as Markdown for another agent: { mode: "copy" | "open" | "save" }. The extension copies or saves it.
+    agentMarkdown(o) { return ask({ type: "agentMarkdown", mode: o && o.mode }); },
   };
 })();`;
 }

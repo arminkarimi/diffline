@@ -8,7 +8,8 @@ import { runReview, type AgentRunRecord, type Harnesses, type ReviewProgress } f
 import { formatTokens, HarnessError, type TokenUsage } from "../agents/harness.ts";
 import { loadSettings } from "../agents/settings.ts";
 import type { AgentId, AgentFile, ListItem, LiveData, PrKey, PullRequestDetail, PullRequestSummary, PushPayload, ReviewData, Risk, RiskInput } from "./types.ts";
-import { prKeyString, prSlug } from "./types.ts";
+import { decided, prKeyString, prSlug } from "./types.ts";
+export { decided } from "./types.ts";
 import { buildReviewData } from "./diff.ts";
 import { ownsAny, parseCodeowners, type OwnerRule } from "./codeowners.ts";
 import { findSecrets } from "./secrets.ts";
@@ -20,6 +21,7 @@ import type { Repos } from "./repos.ts";
 import { computeRisk } from "./risk.ts";
 import type { Store } from "./store.ts";
 import { MetricsLog, type MetricsEvent, type PageMetrics } from "./metrics-log.ts";
+import { reviewMarkdown, type ReviewMarkdown } from "./review-markdown.ts";
 import { aggregate, exportText, GROUP_BYS, parseEvents, PERIODS, sinceDays, type GroupBy, type MetricsReport } from "./metrics.ts";
 
 export interface ServiceConfig {
@@ -182,15 +184,6 @@ const runLock = (key: PrKey) => `run-${prSlug(key)}`;
 /** What the list keeps of an agent review. */
 const agentSummary = (a: AgentFile | null): PrRecord["agent"] =>
   a ? { commit: a.commit, ranAt: a.ranAt, findings: a.findings.map((f) => ({ id: f.id, severity: f.severity })), description: a.description || null } : null;
-/**
- * Whether the saved state decided a finding. Positional ids from before ids were stable ("f1", "f2", …) count only
- * when the decision names the run it was made on, which older decisions don't.
- */
-export function decided(state: { findings?: Record<string, { state?: string; run?: string }> } | null, id: string, ranAt: string | undefined): boolean {
-  const d = state?.findings?.[id];
-  if (!d || !d.state) return false;
-  return !/^f\d+$/.test(id) || (!!d.run && d.run === ranAt);
-}
 
 const keyOf = (s: PullRequestSummary): PrKey => {
   const [owner, name] = s.repo.split("/");
@@ -240,8 +233,12 @@ export class DifflineService extends EventEmitter {
   /** The review metrics log (metrics-log.ts). */
   readonly metricsLog: MetricsLog;
 
-  constructor(opts: { store: Store; repos: Repos; memory: Memory; config: () => ServiceConfig; log: (line: string) => void }) {
+  /** The extension's version, for the agent review export's footer. */
+  readonly version: string | undefined;
+
+  constructor(opts: { store: Store; repos: Repos; memory: Memory; config: () => ServiceConfig; log: (line: string) => void; version?: string }) {
     super();
+    this.version = opts.version;
     this.store = opts.store;
     this.repos = opts.repos;
     this.memory = opts.memory;
@@ -827,6 +824,54 @@ export class DifflineService extends EventEmitter {
     const { events } = parseEvents(await this.metricsLog.read());
     const date = now.toISOString().slice(0, 10);
     return { text: exportText(events, fmt, sinceDays(d, now), now), name: fmt === "csv" ? `diffline-finding-outcomes-${date}.csv` : `diffline-review-metrics-${date}.json`, events: events.length };
+  }
+
+  /* ---------- Exporting an agent review ---------- */
+
+  /**
+   * The agent review as Markdown for another agent (review-markdown.ts), with the page's decisions on it. Line numbers
+   * come from the diff at the commit the agents reviewed: the current diff when the pull request hasn't moved on,
+   * else a cached or rebuilt diff at that commit; without one the findings keep their paths and quoted lines.
+   */
+  async agentReviewMarkdown(key: PrKey, opts: { openOnly?: boolean; now?: Date } = {}): Promise<ReviewMarkdown & { name: string }> {
+    const agent = await this.store.readAgent(key);
+    if (!agent) throw new Error(`${prKeyString(key)} has no agent review yet.`);
+    const detail = await this.detail(key, 5 * 60_000).catch((err) => {
+      this.log(`Exporting ${prKeyString(key)}'s agent review without GitHub: ${err instanceof Error ? err.message : err}`);
+      return null;
+    });
+    const summary = this.get(key)?.summary || null;
+    const pr = detail?.pr || summary;
+    const data = await this.reviewedData(key, agent.commit, detail).catch((err) => {
+      this.log(`No diff at ${agent.commit.slice(0, 7)} for ${prKeyString(key)}'s export: ${err instanceof Error ? err.message : err}`);
+      return null;
+    });
+    const state = await this.store.readState(key);
+    const out = reviewMarkdown({
+      key,
+      pr: { title: pr?.title || "", url: detail?.pr.url || summary?.url || null, author: pr?.author || null, baseRefName: pr?.baseRefName, headRefName: pr?.headRefName, headRefOid: pr?.headRefOid },
+      agent,
+      data,
+      state,
+      openOnly: !!opts.openOnly,
+      version: this.version,
+      now: opts.now,
+    });
+    return { ...out, name: `${key.owner}-${key.name}-${key.number}-agent-review.md` };
+  }
+
+  /** The diff at a commit the agents reviewed, or null when the clone doesn't have it. */
+  private async reviewedData(key: PrKey, commit: string, detail: PullRequestDetail | null): Promise<ReviewData | null> {
+    if (detail && detail.pr.headRefOid === commit) return (await this.loadData(key, detail)).data;
+    const cached = await this.store.findReviewData(key, commit);
+    if (cached) return cached;
+    if (!detail) return null;
+    const clone = await this.repos.resolve(key.owner, key.name);
+    if (!(await this.repos.hasCommit(clone.path, commit)) || !(await this.repos.hasCommit(clone.path, detail.pr.baseRefOid))) return null;
+    const built = await buildReviewData(clone.path, detail.pr.baseRefOid, commit, null, { base: detail.pr.baseRefName, head: detail.pr.headRefName });
+    built.repo = `${key.owner}/${key.name}`;
+    await this.store.writeReviewData(key, commit, null, built);
+    return built;
   }
 
   /* ---------- Agents ---------- */

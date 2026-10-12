@@ -120,7 +120,8 @@ export class PullRequestTree implements vscode.TreeDataProvider<Node>, vscode.Di
         : new vscode.ThemeIcon(shape, new vscode.ThemeColor(node.risk ? RISK_COLOR[node.risk.level] : "disabledForeground"));
     // Runs in another window are stopped there, so their rows get neither Run nor Stop.
     const context = r.run.state === "elsewhere" ? "elsewhere" : running || r.run.state === "waiting" ? "running" : "idle";
-    item.contextValue = `pr.${context}${r.pinned ? ".pinned" : ""}`;
+    // ".agent": it has an agent review to copy.
+    item.contextValue = `pr.${context}${r.agent ? ".agent" : ""}${r.pinned ? ".pinned" : ""}`;
     item.command = { command: "diffline.open", title: "Open Review", arguments: [key] };
     item.tooltip = this.tooltip(node, status.text);
     return item;

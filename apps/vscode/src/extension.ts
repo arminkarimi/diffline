@@ -10,7 +10,7 @@ import type { AgentFailure } from "./agents/review.ts";
 import type { AgentFile, AgentId, PrKey } from "./core/types.ts";
 import { timeAgo } from "./core/time.ts";
 import { prKeyString } from "./core/types.ts";
-import { ReviewPanel } from "./vscode/panel.ts";
+import { exportAgentReview, ReviewPanel } from "./vscode/panel.ts";
 import { SORT_WORDS, type SidebarConfig } from "./core/grouping.ts";
 import { PullRequestTree, type Node } from "./vscode/tree.ts";
 
@@ -89,7 +89,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     workspaceDirs: () => (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath),
     log,
   });
-  const service = new DifflineService({ store, repos, memory: context.globalState, config: readConfig, log });
+  const service = new DifflineService({ store, repos, memory: context.globalState, config: readConfig, log, version: String(context.extension.packageJSON.version || "") || undefined });
   const panel = new ReviewPanel(context.extensionUri, service, log);
   const tree = new PullRequestTree(service);
   const view = vscode.window.createTreeView("diffline.pullRequests", { treeDataProvider: tree, showCollapseAll: true });
@@ -422,6 +422,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
   command("diffline.removePullRequest", async (arg: unknown) => {
     const key = keyFrom(arg, panel);
     if (key) await service.unpin(key);
+  });
+  /**
+   * The agent review as Markdown for another agent: the sidebar row's or the open review's pull request, else one picked
+   * from those with an agent review. Copies every finding; the notification offers to save it as a file instead.
+   */
+  command("diffline.copyAgentReview", async (arg: unknown) => {
+    let key = keyFrom(arg, panel);
+    if (!key) {
+      const rows = service.all().filter((r) => r.agent);
+      if (!rows.length) return void vscode.window.showInformationMessage("No pull request has an agent review yet. Run the agents on one first.");
+      rows.sort((a, b) => Date.parse(b.agent!.ranAt) - Date.parse(a.agent!.ranAt));
+      const pick = await vscode.window.showQuickPick(
+        rows.map((r) => {
+          const n = r.agent!.findings.length;
+          return { label: `#${r.key.number} ${r.summary?.title ?? ""}`.trim(), description: `${r.key.owner}/${r.key.name} · ${n} finding${n === 1 ? "" : "s"} · ${timeAgo(r.agent!.ranAt)}`, key: r.key };
+        }),
+        { title: "Copy which agent review as Markdown?", placeHolder: "Pull requests the agents reviewed", matchOnDescription: true },
+      );
+      if (!pick) return;
+      key = pick.key;
+    }
+    try {
+      const out = await exportAgentReview(service, key, "copy", log);
+      const choice = await vscode.window.showInformationMessage(
+        `Copied ${out.chars.toLocaleString("en-US")} characters for ${out.findings} finding${out.findings === 1 ? "" : "s"} from ${prKeyString(key)}'s agent review. Paste it into another agent.`,
+        "Save as Markdown…",
+      );
+      if (choice) await exportAgentReview(service, key, "save", log);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Couldn't copy the agent review: ${err instanceof Error ? err.message : err}`);
+    }
   });
   command("diffline.showLog", () => output.show(true));
   command("diffline.openHome", () => panel.showHome());

@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "agent": "Diffline (claude)",
+  "ranAt": "2026-10-10T14:32:05.000Z",
+  "commit": "f53a7f581b5c4afa889751cbb4daf6d06871aebe",
+  "lede": "Adds promo codes end to end: a table, validation, the discount in cart totals and a field at checkout. The redemption count is the part to read closely.",
+  "agents": [
+    {
+      "id": "guide",
+      "name": "Guide agent",
+      "short": "Guide",
+      "focus": "Description, reading order and flow"
+    },
+    {
+      "id": "correctness",
+      "name": "Correctness agent",
+      "short": "Correctness",
+      "focus": "Logic errors and edge cases"
+    },
+    {
+      "id": "security",
+      "name": "Security agent",
+      "short": "Security",
+      "focus": "Secrets, injection and access control"
+    },
+    {
+      "id": "tests",
+      "name": "Tests agent",
+      "short": "Tests",
+      "focus": "Missing and weak tests"
+    }
+  ],
+  "plan": {
+    "chapters": [
+      {
+        "title": "The promo code model",
+        "note": "The table and the type everything else uses.",
+        "source": {
+          "kind": "auto",
+          "text": "Grouped by the guide agent"
+        },
+        "files": [
+          "src/db/migrations/0007_promo_codes.sql",
+          "src/promotions/promo.ts",
+          "src/promotions/promo.test.ts",
+          "src/db/index.ts"
+        ],
+        "quiet": false
+      },
+      {
+        "title": "Applying a code at checkout",
+        "note": "Where the discount enters the totals and the charge.",
+        "source": {
+          "kind": "auto",
+          "text": "Grouped by the guide agent"
+        },
+        "files": [
+          "src/cart/cart.ts",
+          "src/checkout/checkout.ts",
+          "src/payments/charge.ts",
+          "src/lib/money.ts"
+        ],
+        "quiet": false
+      },
+      {
+        "title": "The checkout page",
+        "note": "The field and the discount row.",
+        "source": {
+          "kind": "auto",
+          "text": "Grouped by the guide agent"
+        },
+        "files": [
+          "web/components/PromoCodeField.tsx",
+          "web/components/CheckoutSummary.tsx"
+        ],
+        "quiet": false
+      },
+      {
+        "title": "Everything else",
+        "note": "Files the reading order doesn't place elsewhere.",
+        "source": {
+          "kind": "auto",
+          "text": "Files not placed in a chapter"
+        },
+        "files": [
+          "CHANGELOG.md",
+          "package.json",
+          "package-lock.json"
+        ],
+        "quiet": true
+      }
+    ],
+    "reasons": [
+      "Model first, then where it's used."
+    ]
+  },
+  "findings": [
+    {
+      "id": "correctness-a7f05b87",
+      "agent": "correctness",
+      "path": "src/checkout/checkout.ts",
+      "match": "await db.promoCodes.increment(promo.code, \"redemptions\");",
+      "severity": "high",
+      "confidence": "High confidence",
+      "label": "blocking",
+      "title": "Redemption limit can be exceeded by concurrent checkouts",
+      "body": "`validatePromo` checks `redemptions >= maxRedemptions` before the charge, and the count only goes up after the charge succeeded. Two checkouts with the last redemption of a code both pass the check and both get the discount.\n\n# What to check\nWhether `promo_codes.max_redemptions` is meant as a hard limit.",
+      "steps": [
+        {
+          "path": "src/promotions/promo.ts",
+          "match": "promo.redemptions >= promo.maxRedemptions",
+          "text": "The limit is read here, before the charge"
+        },
+        {
+          "match": "const charge = await chargeCustomer({",
+          "text": "The customer is charged with the discount"
+        },
+        {
+          "match": "await db.promoCodes.increment(promo.code, \"redemptions\");",
+          "text": "The count goes up only now"
+        }
+      ],
+      "fix": {
+        "text": "Reserve the redemption atomically before charging, and release it if the charge fails:\n\n```sql\nUPDATE promo_codes SET redemptions = redemptions + 1\nWHERE code = $1 AND (max_redemptions IS NULL OR redemptions < max_redemptions)\n```"
+      },
+      "comment": "Two checkouts racing for the last redemption both pass `validatePromo` and both get the discount, since the count only goes up after the charge. Could we reserve the redemption atomically before charging?",
+      "followups": [
+        "Is `max_redemptions` a hard limit for finance, or a soft one?"
+      ]
+    },
+    {
+      "id": "correctness-96f079a7",
+      "agent": "correctness",
+      "path": "src/payments/charge.ts",
+      "match": "if (!Number.isInteger(amount) || amount <= 0) {",
+      "severity": "medium",
+      "confidence": "Worth asking",
+      "label": "question",
+      "title": "A code that covers the whole order makes checkout fail",
+      "body": "`discountFor` caps the discount at the subtotal, so a fixed code worth more than a small cart with free shipping gives a total of 0. `assertChargeable` then throws a `RangeError`, which `checkout` doesn't catch: the customer gets a 500 instead of a free order or a clear error.",
+      "comment": "What should happen when a code covers the whole order? Right now `assertChargeable` throws and checkout fails with a 500."
+    },
+    {
+      "id": "correctness-b5ded246",
+      "agent": "correctness",
+      "path": "src/cart/cart.ts",
+      "match": "const tax = Math.round(subtotal * TAX_RATE);",
+      "severity": "medium",
+      "confidence": "Worth asking",
+      "label": "question",
+      "title": "Tax is now charged on the discounted amount",
+      "body": "Tax used to be on the full subtotal. It's now on the discounted amount, which is right in most places, but it's a change in what customers pay that the description doesn't mention.",
+      "comment": "Tax moves from the subtotal to the discounted amount here. Is that confirmed for every region we sell in?"
+    },
+    {
+      "id": "tests-0d8de821",
+      "agent": "tests",
+      "path": "src/checkout/checkout.ts",
+      "match": "if (promo) {",
+      "severity": "low",
+      "confidence": "Minor",
+      "label": "suggestion",
+      "title": "No test covers checkout with a promo code",
+      "body": "`promo.test.ts` covers validation and the discount, but nothing calls `checkout` with a `promoCode`: the invalid-code response and the redemption count are untested.",
+      "comment": "Could we add a checkout test with a promo code, covering the `invalid_promo` response and the redemption count?"
+    },
+    {
+      "id": "security-0badf00d",
+      "agent": "security",
+      "severity": "low",
+      "confidence": "Minor",
+      "label": "nit",
+      "path": "src/payments/provider.ts",
+      "match": "apiKey: process.env.PAYMENTS_KEY",
+      "title": "Provider key read without a check",
+      "body": "The provider is created with whatever `PAYMENTS_KEY` holds, even when it's empty.",
+      "comment": "Should the provider fail at startup when `PAYMENTS_KEY` is empty?"
+    }
+  ],
+  "checked": [
+    {
+      "agent": "guide",
+      "text": "The description matches what the diff does."
+    },
+    {
+      "agent": "security",
+      "path": "src/checkout/checkout.ts",
+      "text": "The promo code is validated with zod and capped at 32 characters before it reaches the database."
+    },
+    {
+      "agent": "correctness",
+      "path": "src/lib/money.ts",
+      "text": "`percentOf` rounds down, so a percentage discount never exceeds what was advertised."
+    }
+  ],
+  "description": {
+    "kind": "feature",
+    "why": "It adds a new capability customers use.",
+    "items": [
+      {
+        "rule": "what",
+        "status": "covered",
+        "quote": "Adds promo codes to checkout."
+      },
+      {
+        "rule": "why",
+        "status": "missing",
+        "note": "Nothing says why promo codes are needed now.",
+        "ask": "What's the reason for adding promo codes now: a campaign, a partner, a request?"
+      },
+      {
+        "rule": "diagram",
+        "status": "missing",
+        "note": "The change touches the database, the API and the page.",
+        "ask": "Could you add a short diagram of how a code goes from the field to the order?"
+      },
+      {
+        "rule": "rollout",
+        "status": "partly",
+        "quote": "Adds promo codes to checkout.",
+        "note": "No word on the migration or a flag.",
+        "ask": "Does the migration run before the deploy, and is there a flag to turn codes off?",
+        "refs": [
+          {
+            "path": "src/db/migrations/0007_promo_codes.sql",
+            "match": "CREATE TABLE promo_codes ("
+          }
+        ]
+      },
+      {
+        "rule": "dependencies",
+        "status": "none"
+      },
+      {
+        "rule": "risks",
+        "status": "missing",
+        "note": "Tax and redemption limits change what customers pay.",
+        "ask": "What are the risks, for example tax on discounted orders?"
+      }
+    ]
+  },
+  "diagrams": [
+    {
+      "id": "apply-code",
+      "title": "Applying a promo code at checkout",
+      "short": "Apply a code",
+      "summary": "The code goes from the field to checkout, is validated against the table, and lowers the totals before the charge.",
+      "nodes": [
+        {
+          "id": "customer",
+          "label": "Customer",
+          "kind": "actor"
+        },
+        {
+          "id": "field",
+          "label": "PromoCodeField",
+          "detail": "Sends the code on Apply",
+          "change": "added",
+          "refs": [
+            {
+              "path": "web/components/PromoCodeField.tsx",
+              "match": "const result = await onApply(code);"
+            }
+          ]
+        },
+        {
+          "id": "checkout",
+          "label": "checkout()",
+          "detail": "Parses the request and validates the code",
+          "change": "changed",
+          "before": {
+            "label": "checkout(req)",
+            "detail": "Typed request, no validation"
+          },
+          "refs": [
+            {
+              "path": "src/checkout/checkout.ts",
+              "match": "const parsed = CheckoutRequest.safeParse(input);",
+              "end": "const req = parsed.data;"
+            }
+          ]
+        },
+        {
+          "id": "table",
+          "label": "promo_codes",
+          "kind": "data",
+          "change": "added",
+          "refs": [
+            {
+              "path": "src/db/migrations/0007_promo_codes.sql",
+              "match": "CREATE TABLE promo_codes ("
+            }
+          ]
+        },
+        {
+          "id": "totals",
+          "label": "calculateTotals(cart, promo)",
+          "detail": "Discount before shipping and tax",
+          "change": "changed",
+          "refs": [
+            {
+              "path": "src/cart/cart.ts",
+              "match": "const discount = promo ? discountFor(promo, subtotal) : 0;"
+            }
+          ]
+        },
+        {
+          "id": "oldtax",
+          "label": "Tax on the full subtotal",
+          "change": "removed",
+          "refs": [
+            {
+              "path": "src/cart/cart.ts",
+              "match": "const tax = Math.round(subtotal * TAX_RATE);"
+            }
+          ]
+        },
+        {
+          "id": "count",
+          "label": "Count the redemption",
+          "detail": "After the charge",
+          "change": "added",
+          "refs": [
+            {
+              "path": "src/checkout/checkout.ts",
+              "match": "await db.promoCodes.increment(promo.code, \"redemptions\");"
+            }
+          ],
+          "findings": [
+            "correctness-a7f05b87",
+            "tests-0d8de821"
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "from": "customer",
+          "to": "field",
+          "label": "types \"FALL15\""
+        },
+        {
+          "from": "field",
+          "to": "checkout",
+          "label": "POST /checkout",
+          "change": "added"
+        },
+        {
+          "from": "checkout",
+          "to": "table",
+          "label": "find(code)",
+          "change": "added"
+        },
+        {
+          "from": "checkout",
+          "to": "totals",
+          "label": "promo | undefined"
+        },
+        {
+          "from": "checkout",
+          "to": "oldtax",
+          "change": "removed"
+        },
+        {
+          "from": "checkout",
+          "to": "count",
+          "label": "if promo",
+          "change": "added"
+        }
+      ]
+    }
+  ]
+}

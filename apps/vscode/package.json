@@ -130,6 +130,12 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "diffline.copyAgentReview",
+        "title": "Copy Agent Review as Markdown",
+        "category": "Diffline",
+        "icon": "$(copy)"
+      },
+      {
         "command": "diffline.showLog",
         "title": "Show Agent Log",
         "category": "Diffline",
@@ -236,6 +242,11 @@
           "command": "diffline.cancelAgents",
           "when": "view == diffline.pullRequests && viewItem =~ /^pr\\.running/",
           "group": "1_agents@2"
+        },
+        {
+          "command": "diffline.copyAgentReview",
+          "when": "view == diffline.pullRequests && viewItem =~ /^pr\\.[a-z]+\\.agent/",
+          "group": "1_agents@3"
         },
         {
           "command": "diffline.openOnGitHub",

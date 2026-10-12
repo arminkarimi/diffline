@@ -92,6 +92,16 @@ export class Store {
   readReviewData(key: PrKey, head: string, since: string | null) {
     return this.readJson<ReviewData>(this.cacheFile(key, head, since));
   }
+  /** Review data built for a head with any since, or null: its hunks and line numbers are the same either way. */
+  async findReviewData(key: PrKey, head: string): Promise<ReviewData | null> {
+    const dir = path.join(this.root, "cache", prSlug(key));
+    const names = await readdir(dir).catch(() => [] as string[]);
+    for (const n of names.filter((x) => x === `${head}.json` || (x.startsWith(`${head}-`) && x.endsWith(".json")))) {
+      const data = await this.readJson<ReviewData>(path.join(dir, n));
+      if (data && data.head?.sha === head) return data;
+    }
+    return null;
+  }
   async writeReviewData(key: PrKey, head: string, since: string | null, data: ReviewData) {
     await this.writeJson(this.cacheFile(key, head, since), data);
     await this.prune(path.join(this.root, "cache", prSlug(key)), 4);
