@@ -468,6 +468,10 @@ a { color: var(--blue); }
 /* Large pull requests (app.js sets .many-files): files off screen skip layout and paint until they come near, which
    keeps a review of hundreds of files responsive. Their size is estimated until first shown, then remembered. */
 .many-files .file { content-visibility: auto; contain-intrinsic-size: auto 480px; }
+/* While a jump is pinned (scrollToY in app.js), only the target and its ancestors can be the scroll anchor. */
+.pinning body * { overflow-anchor: none; }
+.pinning body .anchor-path { overflow-anchor: auto; }
+.many-files .file.pin-file { content-visibility: visible; }
 .fh {
   position: sticky; top: calc(var(--top) + var(--bar-h) + var(--tool-h)); z-index: 20;
   display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 7px 10px 7px 6px;

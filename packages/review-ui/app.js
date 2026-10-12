@@ -3681,17 +3681,22 @@ function stickyOffset(withFile) {
 
 function scrollToEl(el, withFile) {
   if (!el) return;
-  scrollToY(() => el.getBoundingClientRect().top + window.scrollY - stickyOffset(withFile));
+  scrollToY(() => el.getBoundingClientRect().top + window.scrollY - stickyOffset(withFile), el);
 }
 
 // Scroll so that y() is at the top. On large pull requests, files off screen have estimated heights until they come
 // near (.many-files), so a smooth scroll would end in the wrong place: jump, then correct once the files around the
-// target have their real size.
-function scrollToY(y) {
+// target have their real size. Those sizes keep arriving for a while (each file renders as it nears the screen), and
+// the browser's scroll anchoring would follow whichever element was at the top right after the jump, placed by
+// estimates and often another finding, thousands of pixels away. So the target is pinned: everything else is left out
+// of scroll anchoring (.pinning, styles.css), and the browser keeps the target where it is however the content above
+// it resizes. The pin lasts until the reviewer scrolls, clicks or types, or for 10 seconds.
+function scrollToY(y, el) {
   if (!document.documentElement.classList.contains("many-files")) {
     window.scrollTo({ top: Math.max(0, y()), behavior: reduced.matches ? "auto" : "smooth" });
     return;
   }
+  if (el) pinScroll(el);
   let tries = 0;
   const settle = () => {
     const top = Math.max(0, y());
@@ -3700,6 +3705,33 @@ function scrollToY(y) {
     requestAnimationFrame(() => requestAnimationFrame(settle));
   };
   settle();
+}
+
+let unpinScroll = null;
+const PIN_ENDS = ["wheel", "touchstart", "keydown", "mousedown"];
+function pinScroll(el) {
+  unpinScroll?.();
+  const root = document.documentElement;
+  const path = [];
+  for (let n = el; n && n !== document.body; n = n.parentElement) path.push(n);
+  for (const n of path) n.classList.add("anchor-path");
+  // The target's file renders now rather than when it nears the screen, so the jump measures its real layout and the
+  // browser can anchor to the target itself from the start.
+  const file = el.closest(".file");
+  file?.classList.add("pin-file");
+  root.classList.add("pinning");
+  const timer = setTimeout(() => unpinScroll?.(), 10_000);
+  const end = () => unpinScroll?.();
+  unpinScroll = () => {
+    clearTimeout(timer);
+    root.classList.remove("pinning");
+    file?.classList.remove("pin-file");
+    for (const n of path) n.classList.remove("anchor-path");
+    for (const ev of PIN_ENDS) window.removeEventListener(ev, end, true);
+    unpinScroll = null;
+  };
+  // Added after the click that started the jump, so only the reviewer's next action ends the pin.
+  setTimeout(() => { if (unpinScroll) for (const ev of PIN_ENDS) window.addEventListener(ev, end, { capture: true, passive: true }); }, 0);
 }
 
 function pulse(el) {
@@ -3923,7 +3955,7 @@ function tourGo(i) {
   refreshFile(f.i);
   refreshTour();
   const row = tourRows(st)[0];
-  if (row) scrollToY(() => row.getBoundingClientRect().top + window.scrollY - stickyOffset(true) - 44);
+  if (row) scrollToY(() => row.getBoundingClientRect().top + window.scrollY - stickyOffset(true) - 44, row);
 }
 
 function tourRows(st) {
