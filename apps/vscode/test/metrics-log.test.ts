@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { buildEvents, editRatio, MetricsLog, runEvent, verbatimText, type MetricsEvent } from "../src/core/metrics-log.ts";
+import { buildEvents, editRatio, MetricsLog, runEvent, skippedRunEvent, verbatimText, type MetricsEvent } from "../src/core/metrics-log.ts";
 import { decided } from "../src/core/service.ts";
 import type { AgentFile, Finding } from "../src/core/types.ts";
 
@@ -145,6 +145,11 @@ test("run events: per-agent harness, model, tokens, cost, findings and failures"
   assert.deepEqual(e.agents![0], { id: "security", harness: "pi", model: "openai/gpt-x", thinking: "high", instructions: "abcdefabcdef", ms: 40_000, tokens: { input: 1000, cachedInput: 400, output: 200 }, costUsd: 0.12, findings: 2 });
   assert.equal(e.agents![1].failed, "timeout");
   assert.equal("thinking" in e.agents![1], false, "thinking only for Pi");
+});
+
+test("run events: an automatic run skipped because the pull request is approved", () => {
+  const e = skippedRunEvent(KEY, { head: HEAD, reason: "approved" }, new Date(RAN));
+  assert.deepEqual(e, { v: 1, at: new Date(RAN).toISOString(), pr: "acme/web#123", head: HEAD, run: null, kind: "run", action: "skipped", reason: "approved", trigger: "auto", agents: [] });
 });
 
 test("MetricsLog: appends in order however fast messages come, file mode 0600", async () => {

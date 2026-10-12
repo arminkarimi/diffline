@@ -350,6 +350,7 @@ test("mergeSearchResults dedupes across searches, keeps every reason and counts 
   const first = items[0];
   assert.equal(first.requested, true);
   assert.equal(first.viewerReview, "COMMENTED");
+  assert.deepEqual(first.latestReviews, [{ login: "lee", state: "APPROVED" }, { login: "armin", state: "COMMENTED" }]); // for approvedBy
   assert.equal(first.own, false);
   assert.equal(first.state, "OPEN"); // the first sighting wins
   assert.deepEqual(first.checks, { total: 8, failed: 3, running: 2 });

@@ -231,6 +231,14 @@ test("agent runs: failures, durations, tokens, cost that wasn't reported, cost p
   assert.equal(tests.tokensReported, 1);
   assert.deepEqual([by.lede.costUsd, by.lede.usefulFindings, by.lede.costPerUseful], [0.1, 0, null]);
 
+  assert.equal(r.total.skippedApproved, 0);
+
+  // Automatic runs skipped on approved pull requests are counted apart, not as runs.
+  const skipped = run("2026-10-13T12:00:00Z", [], { run: null, action: "skipped", reason: "approved", trigger: "auto", ms: undefined });
+  const withSkipped = aggregate([...events, skipped, { ...skipped, head: "b".repeat(40) }], { since: null, groupBy: "agent", now: NOW }).runs.total;
+  assert.deepEqual([withSkipped.runs, withSkipped.auto, withSkipped.skippedApproved], [4, 1, 2]);
+  assert.equal(parseEvents(JSON.stringify(skipped)).events.length, 1, "a skipped run reads back");
+
   const harness = Object.fromEntries(aggregate(events, { since: null, groupBy: "harness", now: NOW }).runs.groups.map((g) => [g.key, g]));
   assert.deepEqual([harness.claude.runs, harness.claude.costUsd, harness.claude.costPerUseful], [4, 1.3, 0.4333]);
   assert.deepEqual([harness.codex.runs, harness.codex.costUsd], [2, null]);

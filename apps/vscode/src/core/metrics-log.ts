@@ -15,7 +15,7 @@ export const METRICS_VERSION = 1;
 export type MetricsKind = "finding" | "description" | "review" | "run";
 export type MetricsAction =
   | "added" | "dismissed" | "copied" | "undone" | "posted" | "left-open" // finding
-  | "asked" | "skipped" // description (and undone)
+  | "asked" | "skipped" // description (and undone); skipped is also a run that didn't start
   | "submitted" // review
   | "finished" | "failed" | "cancelled"; // run
 
@@ -216,6 +216,14 @@ export function runEvent(key: PrKey, r: { head: string | null; run: string | nul
   };
 }
 
+/**
+ * An automatic run that didn't start, and why ("approved": the pull request is approved and the setting skips or asks
+ * first). Written once per pull request and head; no agent ran, so `agents` is empty.
+ */
+export function skippedRunEvent(key: PrKey, r: { head: string | null; reason: "approved" }, now = new Date()): MetricsEvent {
+  return { v: METRICS_VERSION, at: now.toISOString(), pr: prKeyString(key), head: r.head, run: null, kind: "run", action: "skipped", reason: r.reason, trigger: "auto", agents: [] };
+}
+
 /** What earlier lines say, for the lines being appended: `left-open` already written, and each pull request's reviews. */
 interface LogIndex {
   /** "pr\0run\0finding" */
@@ -263,6 +271,12 @@ export class MetricsLog {
   recordRun(key: PrKey, r: Parameters<typeof runEvent>[1]): Promise<MetricsEvent[]> {
     if (!this.enabled()) return Promise.resolve([]);
     return this.then(() => this.append([runEvent(key, r)]));
+  }
+
+  /** Record an automatic run that didn't start (skippedRunEvent). */
+  recordSkippedRun(key: PrKey, r: Parameters<typeof skippedRunEvent>[1]): Promise<MetricsEvent[]> {
+    if (!this.enabled()) return Promise.resolve([]);
+    return this.then(() => this.append([skippedRunEvent(key, r)]));
   }
 
   private async append(events: MetricsEvent[]): Promise<MetricsEvent[]> {

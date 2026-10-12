@@ -36,8 +36,10 @@ function agentStatus(r: PrRecord): { text: string; behind: boolean } {
     }
     case "elsewhere":
       return { text: "agents running in another window", behind };
-    case "held":
-      return { text: `large, press Run for agents${r.agent ? `; ${r.agent.findings.length} findings${behind ? ", behind" : ""}` : ""}`, behind };
+    case "held": {
+      const why = run.hold === "approved-ask" ? "approved, agents wait for your choice" : run.hold === "approved-skip" ? "approved, agents skipped" : "large, press Run for agents";
+      return { text: `${why}${r.agent ? `; ${r.agent.findings.length} findings${behind ? ", behind" : ""}` : ""}`, behind };
+    }
     case "failed":
       return { text: "agents failed", behind };
   }

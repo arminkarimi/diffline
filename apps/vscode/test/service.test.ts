@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { setGhRunner } from "../src/core/github.ts";
-import { DifflineService, type ServiceConfig } from "../src/core/service.ts";
+import { approvedBy, approverWords, DifflineService, isApproved, type ServiceConfig } from "../src/core/service.ts";
 import { Store } from "../src/core/store.ts";
 import { ensureSampleRepo } from "./fixtures/make-sample-repo.ts";
 
@@ -171,4 +171,191 @@ test("review metrics report: an empty or missing log, turned off, a damaged line
   assert.equal(json.name, "diffline-review-metrics-2026-10-14.json");
   assert.equal(JSON.parse(json.text).events.length, 2);
   service.dispose();
+});
+
+test("approvedBy: an approval counts unless anyone requested changes; dismissed reviews and comments don't", () => {
+  const pr = (...reviews: Array<[string, string]>) => ({ latestReviews: reviews.map(([login, state]) => ({ login, state })) });
+  assert.deepEqual(approvedBy(pr(["lee", "APPROVED"], ["sam", "COMMENTED"])), ["lee"]);
+  assert.deepEqual(approvedBy(pr(["lee", "APPROVED"], ["sam", "APPROVED"])), ["lee", "sam"]);
+  assert.equal(approvedBy(pr(["lee", "APPROVED"], ["sam", "CHANGES_REQUESTED"])), null, "changes requested wins");
+  assert.equal(approvedBy(pr(["lee", "DISMISSED"], ["sam", "COMMENTED"])), null);
+  assert.equal(approvedBy(pr()), null);
+  assert.equal(approvedBy({}), null, "a list saved before reviews were kept");
+  assert.equal(approvedBy(null), null);
+  assert.equal(isApproved(pr(["lee", "APPROVED"])), true);
+  assert.equal(approverWords(["lee"], "me"), "lee");
+  assert.equal(approverWords(["Me"], "me"), "you");
+  assert.equal(approverWords(["lee", "sam"], null), "lee and sam");
+  assert.equal(approverWords(["lee", "sam", "kim", "ada"], null), "lee, sam and 2 others");
+});
+
+/** A search that returns these pull requests as requested from "me"; every other gh call fails. */
+function fakeSearch(prs: () => Array<{ number: number; head: string; reviews?: Array<[string, string]> }>) {
+  setGhRunner(async (args) => {
+    const query = args.find((a) => a.startsWith("query=")) || "";
+    if (!query.includes("direct: search")) return { code: 1, stdout: "", stderr: "HTTP 404: Not Found", killed: false };
+    const nodes = prs().map((p) => ({
+      number: p.number,
+      title: `Change ${p.number}`,
+      url: `https://github.com/acme/web/pull/${p.number}`,
+      createdAt: "2026-10-01T00:00:00Z",
+      updatedAt: "2026-10-02T00:00:00Z",
+      state: "OPEN",
+      isDraft: false,
+      author: { login: "lee" },
+      repository: { nameWithOwner: "acme/web" },
+      baseRefName: "main",
+      headRefName: `change-${p.number}`,
+      headRefOid: p.head,
+      additions: 10,
+      deletions: 2,
+      changedFiles: 1,
+      files: { nodes: [{ path: "a.ts", additions: 10, deletions: 2 }] },
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+      latestOpinionatedReviews: { nodes: (p.reviews || []).map(([login, state]) => ({ author: { login }, state })) },
+    }));
+    const data = { viewer: { login: "me", name: null }, direct: { issueCount: nodes.length, nodes }, authored: { issueCount: 0, nodes: [] } };
+    return { code: 0, stdout: JSON.stringify({ data }), stderr: "", killed: false };
+  });
+}
+
+/** A service that schedules automatic runs, with a long quiet period so released runs stay "waiting". */
+async function autoService(policy: () => "ask" | "skip" | "run" | undefined) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "diffline-service-"));
+  const memory = new Map<string, unknown>();
+  const store = new Store(root);
+  await store.init();
+  const base = config();
+  const service = new DifflineService({
+    store,
+    repos: { reset() {}, async cleanTrees() {}, resolve: async () => Promise.reject(new Error("no clone")) } as any,
+    memory: { get: (k, f) => (memory.has(k) ? (memory.get(k) as any) : f), update: async (k, v) => void memory.set(k, v) },
+    config: () => ({ ...base, agents: { ...base.agents, autoRun: true, quietPeriodSeconds: 3600, approvedPullRequests: policy() } }),
+    log: () => undefined,
+  });
+  const asked: string[][] = [];
+  service.on("approvedHeld", (keys: Array<{ number: number }>) => asked.push(keys.map((k) => `#${k.number}`)));
+  const skippedRuns = async () =>
+    (await service.metricsLog.read())
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((e) => e.kind === "run" && e.action === "skipped")
+      .map((e) => `${e.pr}@${e.head} ${e.reason} ${e.trigger} ${e.agents.length}`);
+  return { service, memory, asked, skippedRuns };
+}
+
+test("automatic runs on approved pull requests: ask holds and asks once per head, logging one skipped run each", async () => {
+  let head = "a".repeat(40);
+  let reviews: Array<[string, string]> = [["sam", "APPROVED"]];
+  fakeSearch(() => [
+    { number: 1, head, reviews },
+    { number: 2, head: "b".repeat(40), reviews: [["sam", "APPROVED"], ["kim", "CHANGES_REQUESTED"]] },
+    { number: 3, head: "c".repeat(40) },
+  ]);
+  const { service, memory, asked, skippedRuns } = await autoService(() => undefined);
+  const key = (n: number) => ({ owner: "acme", name: "web", number: n });
+  try {
+    await service.refresh();
+    assert.deepEqual([service.get(key(1))?.run.state, service.get(key(1))?.run.note], ["held", "Approved; waiting for your choice"]);
+    assert.equal(service.awaitingApprovedChoice(key(1)), true);
+    assert.equal(service.get(key(2))?.run.state, "waiting", "changes requested: not approved");
+    assert.equal(service.get(key(3))?.run.state, "waiting");
+    assert.deepEqual(asked, [["#1"]]);
+    assert.deepEqual(service.approval(key(1)), ["sam"]);
+
+    await service.refresh();
+    assert.deepEqual(asked, [["#1"]], "not asked again for the same head");
+    assert.deepEqual(await skippedRuns(), [`acme/web#1@${head} approved auto 0`]);
+
+    head = "d".repeat(40); // a new push asks again
+    await service.refresh();
+    assert.deepEqual(asked, [["#1"], ["#1"]]);
+    assert.equal((await skippedRuns()).length, 2);
+    assert.equal((memory.get("approvedRuns") as any)["acme/web#1"].asked, head);
+
+    reviews = [["sam", "APPROVED"], ["kim", "CHANGES_REQUESTED"]]; // no longer approved: the run goes ahead
+    await service.refresh();
+    assert.equal(service.get(key(1))?.run.state, "waiting");
+  } finally {
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("automatic runs on approved pull requests: skip and run settings, and choices remembered per pull request", async () => {
+  let head = "a".repeat(40);
+  fakeSearch(() => [
+    { number: 1, head, reviews: [["sam", "APPROVED"]] },
+    { number: 2, head, reviews: [["sam", "APPROVED"]] },
+  ]);
+  let policy: "ask" | "skip" | "run" = "skip";
+  const { service, asked, skippedRuns } = await autoService(() => policy);
+  const key = (n: number) => ({ owner: "acme", name: "web", number: n });
+  try {
+    await service.refresh();
+    assert.deepEqual([service.get(key(1))?.run.state, service.get(key(1))?.run.note], ["held", "Approved; automatic runs skipped"]);
+    assert.equal(service.awaitingApprovedChoice(key(1)), false);
+    assert.deepEqual(asked, [], "skip doesn't ask");
+    assert.equal((await skippedRuns()).length, 2);
+
+    policy = "run";
+    await service.refresh();
+    assert.equal(service.get(key(1))?.run.state, "waiting");
+    service.cancel(key(1));
+    service.cancel(key(2));
+
+    policy = "ask";
+    head = "e".repeat(40);
+    await service.refresh();
+    assert.deepEqual(asked, [["#1", "#2"]], "both held in one refresh come together");
+    service.chooseForApproved(key(1), "skip");
+    service.chooseForApproved(key(2), "run");
+    assert.deepEqual([service.get(key(1))?.run.state, service.get(key(1))?.run.note], ["held", "Approved; automatic runs skipped"]);
+    assert.equal(service.get(key(2))?.run.state, "waiting", "Run anyway starts it (after the quiet period here)");
+    service.cancel(key(2));
+
+    head = "f".repeat(40); // later pushes: Skip this PR stays held without asking, Run anyway runs
+    await service.refresh();
+    assert.deepEqual(asked, [["#1", "#2"]]);
+    assert.equal(service.get(key(1))?.run.state, "held");
+    assert.equal(service.get(key(2))?.run.state, "waiting");
+    assert.deepEqual((await skippedRuns()).filter((e) => e.includes(head)), [`acme/web#1@${head} approved auto 0`], "a run that goes ahead isn't logged as skipped");
+  } finally {
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("a run in progress on a pull request that gets approved offers to stop once, unless the setting runs approved ones", async () => {
+  let reviews: Array<[string, string]> = [];
+  fakeSearch(() => [{ number: 1, head: "a".repeat(40), reviews }]);
+  let policy: "ask" | "skip" | "run" = "ask";
+  const { service } = await autoService(() => policy);
+  const key = { owner: "acme", name: "web", number: 1 };
+  const offers: string[] = [];
+  service.on("approvedWhileRunning", (k: { number: number }, by: string[], startedAt: number) => offers.push(`#${k.number} ${by.join(",")} ${startedAt}`));
+  try {
+    await service.refresh();
+    service.get(key)!.run = { state: "running", startedAt: 5, approvedAtStart: false };
+    await service.refresh();
+    assert.deepEqual(offers, [], "not approved yet");
+    reviews = [["sam", "APPROVED"]];
+    await service.refresh();
+    await service.refresh();
+    assert.deepEqual(offers, ["#1 sam 5"], "once per run");
+
+    service.get(key)!.run = { state: "running", startedAt: 6, approvedAtStart: true };
+    await service.refresh();
+    assert.equal(offers.length, 1, "approved before it started: run on purpose");
+
+    policy = "run";
+    service.get(key)!.run = { state: "running", startedAt: 7, approvedAtStart: false };
+    await service.refresh();
+    assert.equal(offers.length, 1);
+  } finally {
+    service.get(key)!.run = { state: "done" };
+    service.dispose();
+    setGhRunner(null);
+  }
 });

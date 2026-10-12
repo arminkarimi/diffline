@@ -484,6 +484,7 @@ function summarizePullRequest(node: any, viewerLogin: string | null, reasons: Re
     requested: Boolean(viewerLogin) && nodes(node.reviewRequests).some((r) => r.requestedReviewer?.login === viewerLogin),
     own: Boolean(viewerLogin) && node.author?.login === viewerLogin,
     viewerReview: mine.length ? (mine[0].state ?? null) : null,
+    latestReviews: nodes(node.latestOpinionatedReviews).map((r) => ({ login: r.author?.login ?? null, state: r.state ?? null })),
     reasons: [...reasons],
   };
 }

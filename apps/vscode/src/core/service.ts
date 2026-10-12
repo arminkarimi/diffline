@@ -37,7 +37,19 @@ export interface ServiceConfig {
     repositories: string[];
     pollSeconds: number;
   };
-  agents: { autoRun: boolean; enabled: AgentId[]; maxParallel: number; quietPeriodSeconds: number; maxAutomaticRuns: number; skipDrafts: boolean; timeoutMinutes: number; autoRunMaxFiles: number; autoRunMaxLines: number };
+  agents: {
+    autoRun: boolean;
+    enabled: AgentId[];
+    maxParallel: number;
+    quietPeriodSeconds: number;
+    maxAutomaticRuns: number;
+    skipDrafts: boolean;
+    timeoutMinutes: number;
+    autoRunMaxFiles: number;
+    autoRunMaxLines: number;
+    /** diffline.agents.approvedPullRequests: what automatic runs (and Run) do on approved pull requests. Missing means ask. */
+    approvedPullRequests?: ApprovedPolicy;
+  };
   harnesses: Harnesses;
   /** How the sidebar and the page's list group and sort pull requests. */
   sidebar: SidebarConfig;
@@ -51,7 +63,11 @@ export interface Memory {
   update(key: string, value: unknown): Thenable<void> | Promise<void>;
 }
 
-// "elsewhere": another VS Code window is running this pull request's agents. "held": too large to run automatically.
+/** Approved pull requests: "ask" holds automatic runs and asks, "skip" holds them, "run" runs them as any other. */
+export type ApprovedPolicy = "ask" | "skip" | "run";
+
+// "elsewhere": another VS Code window is running this pull request's agents. "held": an automatic run waits for you
+// (too large, or approved).
 export type RunState = "idle" | "waiting" | "queued" | "running" | "elsewhere" | "held" | "done" | "failed" | "cancelled";
 
 export interface RunStatus {
@@ -68,6 +84,12 @@ export interface RunStatus {
   automatic?: boolean;
   /** Why a run is held back. */
   note?: string;
+  /** What holds it: too large, or approved (with automatic runs skipped, or waiting for your choice). */
+  hold?: "large" | "approved-skip" | "approved-ask";
+  /** The pull request was approved when this run started, so approving it later isn't news. */
+  approvedAtStart?: boolean;
+  /** Already offered to stop this run because the pull request was approved while it ran. */
+  stopOffered?: boolean;
 }
 
 export interface PrRecord {
@@ -121,6 +143,40 @@ export function tooLargeToAutoRun(
   if (s.changedFiles <= cfg.autoRunMaxFiles && lines <= cfg.autoRunMaxLines) return null;
   return `Large pull request (${s.changedFiles} files, ${lines.toLocaleString("en-US")} lines changed): agents wait for you to press Run.`;
 }
+
+/**
+ * Who approved a pull request, or null when it isn't approved: approved means at least one reviewer's latest
+ * approval-or-change-request is an approval and none is a change request. Dismissed reviews and comments don't count.
+ * Takes a list summary or the page's pull request (both carry latestReviews).
+ */
+export function approvedBy(pr: { latestReviews?: ReadonlyArray<{ login?: string | null; state?: string | null }> | null } | null | undefined): string[] | null {
+  const reviews = pr?.latestReviews || [];
+  if (reviews.some((r) => r.state === "CHANGES_REQUESTED")) return null;
+  const logins = reviews.filter((r) => r.state === "APPROVED").map((r) => r.login || "someone");
+  return logins.length ? [...new Set(logins)] : null;
+}
+
+export const isApproved = (pr: Parameters<typeof approvedBy>[0]): boolean => approvedBy(pr) !== null;
+
+/** Approvers for a message: "you", "lee", "lee and sam", "lee, sam and 2 others". */
+export function approverWords(logins: string[], viewer: string | null): string {
+  const names = logins.map((l) => (viewer && l.toLowerCase() === viewer.toLowerCase() ? "you" : l));
+  if (names.length <= 1) return names[0] || "someone";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  const rest = names.length - 2;
+  return `${names[0]}, ${names[1]} and ${rest} other${rest === 1 ? "" : "s"}`;
+}
+
+export const APPROVED_SKIPPED_NOTE = "Approved; automatic runs skipped";
+export const APPROVED_ASK_NOTE = "Approved; waiting for your choice";
+
+/**
+ * What's remembered about approved pull requests, by lowercase key (memory "approvedRuns"): your choice for the
+ * pull request (Skip this PR / Run anyway), the head you were last asked about, the head whose skipped run went to
+ * the metrics, and when the entry last changed. Entries untouched for APPROVED_MEMORY_DAYS are dropped.
+ */
+export type ApprovedMemory = Record<string, { choice?: "skip" | "run"; asked?: string; logged?: string; at: number }>;
+const APPROVED_MEMORY_DAYS = 90;
 
 const runLock = (key: PrKey) => `run-${prSlug(key)}`;
 /** What the list keeps of an agent review. */
@@ -321,6 +377,7 @@ export class DifflineService extends EventEmitter {
       this.changed();
       void this.refreshExtras();
       this.scheduleAutomaticRuns();
+      this.offerStops();
       void this.warmUp();
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
@@ -620,6 +677,8 @@ export class DifflineService extends EventEmitter {
     live.groups = groups;
     live.grouping = this.grouping();
     live.list = await this.listItems(key, detail, groups);
+    const run = this.record(key).run;
+    if (run.state === "held" && run.note) live.runNote = run.note;
     if (opts.view === "metrics") live.startView = "metrics";
     else if (opts.home) live.startView = "inbox";
     return { data, live };
@@ -772,11 +831,85 @@ export class DifflineService extends EventEmitter {
 
   /* ---------- Agents ---------- */
 
+  /** diffline.agents.approvedPullRequests, "ask" when missing or unknown. */
+  approvedPolicy(): ApprovedPolicy {
+    const p = this.config().agents.approvedPullRequests;
+    return p === "skip" || p === "run" ? p : "ask";
+  }
+
+  /** Who approved this pull request (from the list, else the page's last fetch), or null when it isn't approved. */
+  approval(key: PrKey): string[] | null {
+    const r = this.get(key);
+    return approvedBy(r?.summary ?? this.details.get(prKeyString(key).toLowerCase())?.detail.pr);
+  }
+
+  /** Whether this pull request's automatic run is held, waiting for your choice because it's approved. */
+  awaitingApprovedChoice(key: PrKey): boolean {
+    const run = this.get(key)?.run;
+    return run?.state === "held" && run.hold === "approved-ask";
+  }
+
+  private approvedMemory(): ApprovedMemory {
+    return { ...this.memory.get<ApprovedMemory>("approvedRuns", {}) };
+  }
+
+  private saveApprovedMemory(m: ApprovedMemory): void {
+    const cutoff = Date.now() - APPROVED_MEMORY_DAYS * 864e5;
+    for (const [id, e] of Object.entries(m)) if (!e || !(e.at >= cutoff)) delete m[id];
+    void this.memory.update("approvedRuns", m);
+  }
+
+  /**
+   * Your answer about an approved pull request's automatic runs, kept for later pushes: "skip" holds them without
+   * asking again; "run" starts this one and runs later ones as on any pull request.
+   */
+  chooseForApproved(key: PrKey, choice: "skip" | "run"): void {
+    const m = this.approvedMemory();
+    const id = prKeyString(key).toLowerCase();
+    m[id] = { ...m[id], choice, at: Date.now() };
+    this.saveApprovedMemory(m);
+    this.log(`${prKeyString(key)}: ${choice === "run" ? "automatic runs go ahead though it's approved" : "automatic runs skipped while it's approved"}`);
+    this.scheduleAutomaticRuns();
+    // Scheduling only runs in the window that starts automatic runs, with them turned on; Run anyway still runs.
+    if (choice === "run" && this.get(key)?.run.hold?.startsWith("approved")) void this.runAgents(key, { automatic: true });
+  }
+
+  /**
+   * Hold an automatic run on an approved pull request unless the setting or your choice for it says run. Returns
+   * whether it's held. Logs a skipped run once per pull request and head, and returns the ones to ask about.
+   */
+  private holdApproved(r: PrRecord, s: PullRequestSummary, m: ApprovedMemory, ask: PrKey[]): boolean {
+    const policy = this.approvedPolicy();
+    if (policy === "run" || !isApproved(s)) return false;
+    const id = prKeyString(r.key).toLowerCase();
+    const entry = m[id];
+    // Kept while the pull request is still listed and approved: touched at most once a day, so refreshes don't write.
+    const next = { ...entry, at: entry && Date.now() - entry.at < 864e5 ? entry.at : Date.now() };
+    m[id] = next;
+    if (entry?.choice === "run") return false;
+    const asking = policy === "ask" && entry?.choice !== "skip";
+    r.run = { state: "held", head: s.headRefOid, hold: asking ? "approved-ask" : "approved-skip", note: asking ? APPROVED_ASK_NOTE : APPROVED_SKIPPED_NOTE };
+    if (entry?.logged !== s.headRefOid) {
+      next.logged = s.headRefOid;
+      void this.metricsLog
+        .recordSkippedRun(r.key, { head: s.headRefOid, reason: "approved" })
+        .catch((err) => this.log(`Couldn't write to the review metrics: ${err instanceof Error ? err.message : err}`));
+    }
+    if (asking && entry?.asked !== s.headRefOid) {
+      next.asked = s.headRefOid;
+      ask.push(r.key);
+    }
+    return true;
+  }
+
   /** Queue automatic runs for pull requests that request your review and have new commits. */
   private scheduleAutomaticRuns(): void {
     const cfg = this.config().agents;
     if (!cfg.autoRun || !this.leader) return;
     const counts = this.memory.get<Record<string, number>>("autoRuns", {});
+    const approved = this.approvedMemory();
+    const before = JSON.stringify(approved);
+    const ask: PrKey[] = [];
     for (const r of this.all()) {
       const s = r.summary;
       if (!s || !s.reasons.includes("review-requested") || s.state !== "OPEN") continue;
@@ -787,13 +920,32 @@ export class DifflineService extends EventEmitter {
       if ((counts[prKeyString(r.key).toLowerCase()] || 0) >= cfg.maxAutomaticRuns) continue;
       const note = tooLargeToAutoRun(s, cfg);
       if (note) {
-        r.run = { state: "held", head: s.headRefOid, note };
+        r.run = { state: "held", head: s.headRefOid, hold: "large", note };
         continue;
       }
+      if (this.holdApproved(r, s, approved, ask)) continue;
       r.run = { state: "waiting", head: s.headRefOid, automatic: true, dueAt: (r.headSeenAt || Date.now()) + cfg.quietPeriodSeconds * 1000 };
     }
+    if (JSON.stringify(approved) !== before) this.saveApprovedMemory(approved);
     this.startDueRuns();
     this.changed();
+    if (ask.length) this.emit("approvedHeld", ask);
+  }
+
+  /**
+   * Runs in this window on pull requests that were approved after they started: offer once per run to stop them,
+   * unless the setting runs agents on approved pull requests.
+   */
+  private offerStops(): void {
+    if (this.approvedPolicy() === "run") return;
+    for (const r of this.all()) {
+      const run = r.run;
+      if ((run.state !== "queued" && run.state !== "running") || run.approvedAtStart || run.stopOffered) continue;
+      const by = approvedBy(r.summary);
+      if (!by) continue;
+      run.stopOffered = true;
+      this.emit("approvedWhileRunning", r.key, by, run.startedAt);
+    }
   }
 
   private startDueRuns(): void {
@@ -816,7 +968,7 @@ export class DifflineService extends EventEmitter {
     const r = this.record(key);
     const s = r.run.state;
     if (s === "queued" || s === "running") return;
-    r.run = { state: "queued", automatic: !!opts.automatic, startedAt: Date.now() };
+    r.run = { state: "queued", automatic: !!opts.automatic, startedAt: Date.now(), approvedAtStart: isApproved(r.summary) };
     this.changed();
     // Set before the first wait, so Stop works on a run that's still queued.
     const ctrl = new AbortController();

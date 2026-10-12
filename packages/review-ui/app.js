@@ -1686,15 +1686,17 @@ function findingsTally() {
 // In VS Code the extension runs the agents; the page can ask for a run and says when they reviewed an older push.
 const agentsBehind = () => !!(AG && AG.commit && D.head && AG.commit !== D.head.sha);
 const hostRunHTML = (label) => `<button type="button" class="btn sm ghost" data-act="host-run-agents">${icon("play")}${label}</button>`;
+// Why an automatic run is held back (a large or an approved pull request), from the extension.
+const runNoteHTML = () => (LIVE.runNote ? `<p>${esc(LIVE.runNote)}</p>` : "");
 
 function briefHTML() {
   if (!FIND.length && !CHECKED.length && !DESC_ITEMS.length) {
     return `<section class="brief is-closed" id="brief" aria-label="Agent review"><header class="brief-head">${agentAv("lg")}<div class="brief-title"><h2>No agent review yet</h2>
-      <p>Run the agents to check the description, set a reading order, draw the flow and look for problems.</p></div>${hostRunHTML("Run agents")}</header></section>`;
+      <p>Run the agents to check the description, set a reading order, draw the flow and look for problems.</p>${runNoteHTML()}</div>${hostRunHTML("Run agents")}</header></section>`;
   }
   const decided = FIND.length - openFindings().length;
   const head = `<header class="brief-head">${agentAv("lg")}<div class="brief-title"><h2>Agents reviewed this before you</h2>
-      <p>${AGENTS.length} agents ran on <code>${esc(String((AG && AG.commit) || "").slice(0, 7))}</code> ${AGENT_RUN_AT ? ago(AGENT_RUN_AT) : ""} · ${plural(FIND.length, "finding")}${decided ? `, ${decided} decided` : ""}${agentsBehind() ? ` · <b>an older push than the one you're reviewing</b>` : ""}</p></div>
+      <p>${AGENTS.length} agents ran on <code>${esc(String((AG && AG.commit) || "").slice(0, 7))}</code> ${AGENT_RUN_AT ? ago(AGENT_RUN_AT) : ""} · ${plural(FIND.length, "finding")}${decided ? `, ${decided} decided` : ""}${agentsBehind() ? ` · <b>an older push than the one you're reviewing</b>` : ""}</p>${runNoteHTML()}</div>
       ${hostRunHTML(agentsBehind() ? "Run again" : "Rerun")}
       <button type="button" class="icon-btn sm" data-act="brief-toggle" aria-expanded="${S.brief}" aria-label="${S.brief ? "Collapse" : "Expand"} the agent briefing">${icon("chev")}</button></header>`;
   if (!S.brief) return `<section class="brief is-closed" id="brief" aria-label="Agent review">${head}</section>`;
@@ -3580,12 +3582,15 @@ function examplesSheetHTML(key) {
 function runsSectionHTML(r) {
   const t = r.runs.total;
   const groupWord = METRIC_GROUPS[r.groupBy];
-  if (!t.runs) return `<section class="mx-sec" aria-labelledby="mx-runs"><h2 class="mx-h" id="mx-runs">Agent runs</h2><p class="dim">No agent runs in ${periodWord()}.</p></section>`;
+  // Automatic runs that didn't start because the pull request was already approved (diffline.agents.approvedPullRequests).
+  const skipped = t.skippedApproved || 0;
+  const skippedText = skipped ? ` Skipped (approved): ${plural(skipped, "automatic run")} didn't start because the pull request was already approved.` : "";
+  if (!t.runs) return `<section class="mx-sec" aria-labelledby="mx-runs"><h2 class="mx-h" id="mx-runs">Agent runs</h2><p class="dim">No agent runs in ${periodWord()}.${esc(skippedText)}</p></section>`;
   const failures = (g) => (g.failed ? Object.entries(g.failures).map(([k, n]) => `${n} ${FAILURE_WORD[k] || k}`).join(", ") : "–");
   const costCell = (g) => `${money(g.costUsd)}${g.costMissing ? ` <span class="dim">(${g.costMissing} not reported)</span>` : ""}`;
   const perUseful = (g) => (g.costPerUseful != null ? `${money(g.costPerUseful)} <span class="dim">(${g.usefulFindings})</span>` : g.costReported ? `<span class="dim">no useful findings</span>` : "–");
   return `<section class="mx-sec" aria-labelledby="mx-runs"><h2 class="mx-h" id="mx-runs">Agent runs</h2>
-    <p class="mx-lede">${esc(`Agents ran ${plural(t.runs, "time")} (${t.auto} automatic, ${t.manual} by hand): ${t.finished} finished, ${t.failed} failed and ${t.cancelled} stopped. A run took ${duration(t.msMedian)} at the median.`)}
+    <p class="mx-lede">${esc(`Agents ran ${plural(t.runs, "time")} (${t.auto} automatic, ${t.manual} by hand): ${t.finished} finished, ${t.failed} failed and ${t.cancelled} stopped. A run took ${duration(t.msMedian)} at the median.${skippedText}`)}
       ${t.costUsd != null ? esc(` They cost ${money(t.costUsd)} in all${t.costPerUseful != null ? `, ${money(t.costPerUseful)} per useful finding` : ""}.`) : ""}${t.costMissing ? esc(` ${plural(t.costMissing, "agent run")} didn't report a cost and ${t.costMissing === 1 ? "isn't" : "aren't"} in the totals.`) : ""}
       Cost per useful finding divides the reported cost by the useful findings from those same runs.</p>
     <div class="table-wrap"><table class="deps-table mx-table">

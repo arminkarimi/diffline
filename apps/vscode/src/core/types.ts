@@ -165,6 +165,8 @@ export interface PullRequestSummary {
   requested: boolean;
   own: boolean;
   viewerReview: string | null;
+  /** Each reviewer's latest approval or change request (latestOpinionatedReviews). Missing in lists saved by older versions. */
+  latestReviews?: Array<{ login: string | null; state: string | null }>;
   /**
    * Why it's listed. "code-owner" (you or your team own changed files) is added after the search, from CODEOWNERS;
    * "other" is an open pull request in one of your repositories that nobody asked you to review. "reviewed": open,
@@ -347,6 +349,8 @@ export interface LiveData {
   grouping?: { by: "relationship" | "repository"; sort: "risk" | "created" | "updated" };
   /** "inbox" opens the page on its list (the sidebar's Home); "metrics" on the review metrics report. */
   startView?: "inbox" | "metrics";
+  /** Why an automatic agent run is held back (a large or approved pull request), when one is. */
+  runNote?: string;
 }
 
 /* ---------- Risk (computeRisk in app.js) ---------- */

@@ -4,7 +4,7 @@ import { GUIDE, shortName } from "./agents/defaults.ts";
 import { HARNESS_IDS, HARNESS_NAME, harnessVersion, isHarnessId, listPiModels, PI_THINKING, piModelThinking, type HarnessConfig, type HarnessId } from "./agents/harness.ts";
 import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, removeAgent, resetSettings, setAgentHarness, setAgentModel, settingsDir, settingsFile } from "./agents/settings.ts";
 import { Repos } from "./core/repos.ts";
-import { DifflineService, parseKey, type ServiceConfig } from "./core/service.ts";
+import { approverWords, DifflineService, parseKey, type ApprovedPolicy, type ServiceConfig } from "./core/service.ts";
 import { Store } from "./core/store.ts";
 import type { AgentFailure } from "./agents/review.ts";
 import type { AgentFile, AgentId, PrKey } from "./core/types.ts";
@@ -31,6 +31,7 @@ function readConfig(): ServiceConfig {
     ...(id === "pi" ? { thinking: c.get<string>("pi.thinking") || "" } : {}),
   });
   const defaultHarness = c.get<string>("harness");
+  const approved = c.get<string>("agents.approvedPullRequests");
   return {
     watch: {
       direct: c.get<boolean>("watch.reviewRequested", true),
@@ -53,6 +54,7 @@ function readConfig(): ServiceConfig {
       timeoutMinutes: c.get<number>("agents.timeoutMinutes", 20),
       autoRunMaxFiles: c.get<number>("agents.autoRunMaxFiles", 100),
       autoRunMaxLines: c.get<number>("agents.autoRunMaxLines", 5000),
+      approvedPullRequests: (["ask", "skip", "run"] as const).find((x) => x === approved) || "ask",
     },
     sidebar: readSidebar(),
     metrics: { enabled: c.get<boolean>("metrics.enabled", true) },
@@ -140,6 +142,75 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
 
   service.on("runElsewhere", (key: PrKey) => {
     void vscode.window.showInformationMessage(`Agents are already running on #${key.number} in another VS Code window.`);
+  });
+
+  /* Approved pull requests (diffline.agents.approvedPullRequests): automatic runs held to ask first. */
+
+  const setApprovedPolicy = (value: ApprovedPolicy) => vscode.workspace.getConfiguration("diffline").update("agents.approvedPullRequests", value, vscode.ConfigurationTarget.Global);
+  const approvers = (key: PrKey) => approverWords(service.approval(key) || [], service.viewer?.login ?? null);
+  /** Held pull requests not asked about yet. One notification shows at a time; the ones held meanwhile wait for it. */
+  const approvedQueue = new Map<string, PrKey>();
+  let askingApproved = false;
+
+  const askApproved = async (key: PrKey) => {
+    const choice = await vscode.window.showInformationMessage(
+      `${prKeyString(key)} is approved by ${approvers(key)}. Run the agents on it anyway?`,
+      "Skip this PR",
+      "Run anyway",
+      "Always skip approved",
+    );
+    // Dismissed: the run stays held, and this push isn't asked about again.
+    if (choice === "Skip this PR") service.chooseForApproved(key, "skip");
+    else if (choice === "Run anyway") service.chooseForApproved(key, "run");
+    else if (choice === "Always skip approved") await setApprovedPolicy("skip");
+  };
+
+  /** Several at once: one notification, and a pick of which to run. */
+  const askApprovedMany = async (keys: PrKey[]) => {
+    const choice = await vscode.window.showInformationMessage(`${keys.length} approved pull requests have automatic runs waiting.`, "Review them", "Always skip approved");
+    if (choice === "Always skip approved") return void (await setApprovedPolicy("skip"));
+    if (choice !== "Review them") return;
+    const picks = await vscode.window.showQuickPick(
+      keys.map((key) => ({ label: `#${key.number} ${service.get(key)?.summary?.title ?? ""}`.trim(), description: `${key.owner}/${key.name} · approved by ${approvers(key)}`, key })),
+      { title: "Run the agents on which approved pull requests?", placeHolder: "Checked ones run now and on later pushes; the rest stay held until you press Run", canPickMany: true },
+    );
+    for (const p of picks || []) if (service.awaitingApprovedChoice(p.key)) service.chooseForApproved(p.key, "run");
+  };
+
+  const askQueuedApproved = async () => {
+    if (askingApproved) return;
+    askingApproved = true;
+    try {
+      for (;;) {
+        // Skip the ones that changed while they waited (run by hand, no longer approved, setting changed).
+        const keys = [...approvedQueue.values()].filter((k) => service.awaitingApprovedChoice(k));
+        approvedQueue.clear();
+        if (!keys.length) return;
+        if (keys.length === 1) await askApproved(keys[0]);
+        else await askApprovedMany(keys);
+      }
+    } finally {
+      askingApproved = false;
+    }
+  };
+
+  service.on("approvedHeld", (keys: PrKey[]) => {
+    for (const k of keys) approvedQueue.set(prKeyString(k).toLowerCase(), k);
+    void askQueuedApproved();
+  });
+
+  service.on("approvedWhileRunning", async (key: PrKey, by: string[], startedAt: number | undefined) => {
+    const choice = await vscode.window.showInformationMessage(
+      `${prKeyString(key)} was approved while the agents were reviewing it. Stop them to save cost?`,
+      "Stop",
+      "Let them finish",
+    );
+    const run = service.get(key)?.run;
+    // Only the run that was asked about, if it's still going.
+    if (choice === "Stop" && run && (run.state === "queued" || run.state === "running") && run.startedAt === startedAt) {
+      log(`Stopping the agents on ${prKeyString(key)}: approved by ${approverWords(by, service.viewer?.login ?? null)} while they ran`);
+      service.cancel(key);
+    }
   });
 
   /**
@@ -329,6 +400,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
         "Run again",
       );
       if (choice !== "Run again") return;
+    }
+    // Approved already: the agents' review may not be needed, and it costs tokens, so ask unless the setting says run.
+    if (readConfig().agents.approvedPullRequests !== "run" && service.approval(key)) {
+      const choice = await vscode.window.showInformationMessage(
+        `${prKeyString(key)} is already approved by ${approvers(key)}. Run the agents anyway? This uses your model provider's tokens.`,
+        { modal: true },
+        "Run anyway",
+      );
+      if (choice !== "Run anyway") return;
     }
     void service.runAgents(key);
   });

@@ -409,6 +409,21 @@
           "minimum": 1,
           "markdownDescription": "Pull requests with more changed lines (added plus removed) than this don't get automatic agent runs. Press Run to review one."
         },
+        "diffline.agents.approvedPullRequests": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "skip",
+            "run"
+          ],
+          "enumDescriptions": [
+            "Hold automatic runs on approved pull requests and ask once per push whether to run them; Run asks first.",
+            "Don't run the agents automatically on approved pull requests; Run asks first.",
+            "Run the agents on approved pull requests like any other, without asking."
+          ],
+          "default": "ask",
+          "markdownDescription": "What happens to agent runs on pull requests someone has already approved (with no changes requested), to save model cost. A run that's going when the pull request gets approved offers to stop unless this is `run`."
+        },
         "diffline.agents.timeoutMinutes": {
           "type": "integer",
           "default": 20,

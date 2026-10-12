@@ -384,6 +384,8 @@ export interface RunTotals {
   cancelled: number;
   auto: number;
   manual: number;
+  /** Automatic runs that didn't start because the pull request was approved, once per pull request and head. Not in `runs`. */
+  skippedApproved: number;
   msMedian: number | null;
   costUsd: number | null;
   costMissing: number;
@@ -488,7 +490,8 @@ export function aggregate(events: MetricsEvent[], opts: { since: Date | null; gr
 
   // Runs. Useful findings are matched to the run the reviewer saw them on, from the whole log: a finding from a run
   // in the period may be decided after it.
-  const runs = period.filter((e) => e.kind === "run" && Array.isArray(e.agents));
+  const runs = period.filter((e) => e.kind === "run" && Array.isArray(e.agents) && e.action !== "skipped");
+  const skippedRuns = period.filter((e) => e.kind === "run" && e.action === "skipped");
   const usefulByRun = new Map<string, number>();
   for (const o of all) if (o.outcome === "useful" && o.run) usefulByRun.set(runKey(o.pr, o.run, o.agent), (usefulByRun.get(runKey(o.pr, o.run, o.agent)) || 0) + 1);
   const records: RunAgent[] = runs.flatMap((e) => e.agents!.map((a) => ({ ...a, trigger: e.trigger, pr: e.pr, run: e.run ?? null })));
@@ -526,6 +529,7 @@ export function aggregate(events: MetricsEvent[], opts: { since: Date | null; gr
         cancelled: runs.filter((e) => e.action === "cancelled").length,
         auto: runs.filter((e) => e.trigger === "auto").length,
         manual: runs.filter((e) => e.trigger !== "auto").length,
+        skippedApproved: skippedRuns.filter((e) => e.reason === "approved").length,
         msMedian: median(runs.filter((e) => typeof e.ms === "number").map((e) => e.ms!)),
         ...costPer(records, usefulByRun),
       },
