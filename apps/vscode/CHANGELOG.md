@@ -1,12 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
+
+Pi as a third agent harness, review metrics, and a prompt before agents run on approved pull requests.
 
 - **Pi as a third harness.** Agents can run on [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), with any model provider you've signed in to with Pi. Pi agents get only Pi's read tools, run offline in an empty folder of their own, and report cost. Choose the model and thinking level with **Choose Pi model…** in **Choose Agent Harnesses…**, `diffline.pi.model` and `diffline.pi.thinking`, or per agent with `model:` in `agents.yml`.
 - **Review metrics.** **Diffline: Show Review Metrics**, or **Review metrics** on Home, shows your reviews per week, which agents' findings you use, dismiss or leave open, and what agent runs take and cost, for a period and grouped by agent, harness, model or thinking level. Export the events as JSON or the finding outcomes as CSV. The log behind it stays on your computer, holds finding titles but no code, diffs or comment text, and is never sent anywhere. Turn it off with `diffline.metrics.enabled`; **Diffline: Delete Review Metrics** deletes it.
 - **Decisions stay with their findings across re-runs.** A finding's id now comes from its agent and the line it's on, so a decision stays with the same finding when the agents run again, marked "on an earlier run". Before, a decision could attach to a different finding after a re-run. Decisions saved by earlier versions don't say which run they were made on, so their findings show as open again.
 - **The review page follows the sidebar.** Changing the sidebar's grouping or sort order updates an open review page's list without a reload.
 - **Approved pull requests ask before the agents run.** When someone's latest review approves a pull request and nobody's requests changes, an automatic run on it waits and Diffline asks once per push: **Skip this PR**, **Run anyway** (both remembered for the pull request) or **Always skip approved**. `diffline.agents.approvedPullRequests` is `ask` by default, or `skip` or `run`. Unless it's `run`, Run on an approved pull request asks to confirm, and a run that's going when the pull request gets approved offers **Stop**. Show Review Metrics counts the skipped runs.
+- **Install a local build** with `npm run install-local`, which packages the extension and installs it into VS Code.
 - **Documentation**: [features](https://github.com/arminkarimi/diffline/blob/main/docs/features.md), [architecture](https://github.com/arminkarimi/diffline/blob/main/docs/architecture.md) and [contributing](https://github.com/arminkarimi/diffline/blob/main/CONTRIBUTING.md) guides.
 - **Continuous integration**: every push and pull request runs the typecheck and tests, and builds the `.vsix`.
 

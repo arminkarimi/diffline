@@ -2,7 +2,7 @@
   "name": "diffline",
   "displayName": "Diffline",
   "description": "Review GitHub pull requests in VS Code with Claude Code, Codex or Pi agents that run on your computer: description checks, reading order, flow maps and findings, then post your review.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "arminkarimi",
   "preview": true,
   "private": true,
