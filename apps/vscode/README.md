@@ -98,6 +98,20 @@ Diffline adds no charges of its own. The agents use your Claude Code or Codex ac
 
 To spend less: turn off `diffline.agents.autoRun`, lower `diffline.agents.maxAutomaticRuns`, set `diffline.agents.approvedPullRequests` to `skip`, turn agents off in `agents.yml`, or list only the ones you want in `diffline.agents.enabled`.
 
+## Copy an agent review for another agent
+
+To hand the agents' findings to another agent (Claude Code, Codex, Pi or a chat), press **Copy for an agent** in the review page's agent briefing, next to Rerun. The button copies every finding; its menu has three choices:
+
+- **Copy all findings**, the same as the button.
+- **Copy open findings only** leaves out the ones you dismissed and the ones already in your review.
+- **Save as Markdown…** saves the same Markdown to a file you pick.
+
+**Diffline: Copy Agent Review as Markdown** does the same from the command palette, for the open review or one you pick from the pull requests the agents reviewed. It's also on a sidebar row's context menu when that pull request has an agent review. The command copies every finding, and its notification offers **Save as Markdown…**.
+
+The Markdown starts with the git references the other agent needs: the repository and pull request with their URLs, the author, the base and head branches, the full SHAs of the commit the agents reviewed and of the merge base, and the commands to fetch and check out that commit. If the pull request moved on since, it names the current head and says everything refers to the reviewed commit. Then come the summary, the description check with your ask or skip decisions, and the findings in the page's order. Each finding has its severity, agent, confidence and status (open, added to my review, posted, or dismissed and why), its `path:line` in the reviewed commit with a GitHub permalink and the line itself, the reasoning, steps, suggested fix, draft comment and follow-ups. A finding on a removed line says so and is numbered and linked at the merge base; one whose line isn't in the diff keeps its path and the agent's quote, without a number. Last: the checked notes, the reading order and the flows as Mermaid charts.
+
+Diffline builds it on your computer from the saved agent review and your decisions, and puts it only on the clipboard or in the file you pick (readable by your account only). It holds lines of code and the agents' text about them, so paste it only where that code may go.
+
 ## Review metrics
 
 **Diffline: Show Review Metrics**, or **Review metrics** on Home, opens a report on the review page for the last 7, 30 or 90 days, or all time:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Copy an agent review for another agent.** **Copy for an agent**, in the review page's agent briefing, copies the agent review as Markdown to paste into Claude Code, Codex, Pi or a chat: all findings, only the open ones, or saved as a file. **Diffline: Copy Agent Review as Markdown** does the same from the command palette or a sidebar row. It keeps the git references: the repository, pull request and branches, the reviewed commit and merge base with commands to check them out, and each finding's path and line in the reviewed commit with a permalink. It also has the summary, the description check, each finding's status, the checked notes, the reading order and the flows as Mermaid charts.
 - **Jumping to a finding on a large pull request lands on it.** On pull requests with many files, a jump (from the briefing, Next, a diagram or the guided tour) could end on a different finding: the browser followed whatever was at the top of the screen while the files around it rendered. The target is now held in place until you scroll.
 
 ## 0.2.0

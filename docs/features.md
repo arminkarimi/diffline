@@ -5,6 +5,7 @@ What Diffline does today, in the VS Code extension. Settings and setup are in th
 - [Read changes in order](#read-changes-in-order)
 - [The description check](#the-description-check)
 - [Agents review first](#agents-review-first)
+- [Hand the review to another agent](#hand-the-review-to-another-agent)
 - [Your own agents](#your-own-agents)
 - [The Map](#the-map)
 - [Risk score](#risk-score)
@@ -55,6 +56,12 @@ Decisions stay with their finding when the agents run again. A finding's id come
 Agents never approve or block, and the author only sees what you post. Approve stays unavailable until every high finding has a decision.
 
 Every line an agent points at is checked against the diff. Small mistakes, such as a wrong path or different whitespace, are repaired. Anchors that don't resolve to a line of the diff are dropped, rather than posted on the wrong line.
+
+## Hand the review to another agent
+
+**Copy for an agent**, in the briefing's header, copies the agent review as Markdown to paste into Claude Code, Codex, Pi or a chat. Its menu has three choices: **Copy all findings**, **Copy open findings only** (not dismissed and not already in your review), and **Save as Markdown…**. **Diffline: Copy Agent Review as Markdown** does the same from the command palette or a sidebar row.
+
+The Markdown gives the other agent what it needs to find the code: the repository, the pull request, its branches, the commit the agents reviewed and the merge base with the commands to check them out, and each finding's file and line in that commit with a permalink. A removed line is numbered and linked at the merge base. It also has the summary, the description check with your decisions, each finding with its status, the checked notes, the reading order and the flows as Mermaid charts. It holds lines of code and the findings' text, so paste it only where that code may go.
 
 ## Your own agents
 

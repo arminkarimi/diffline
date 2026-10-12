@@ -23,7 +23,7 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 | Folder | What's in it |
 | --- | --- |
 | `src/extension.ts` | Activation: wires the pieces together, registers commands, reads settings. |
-| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping, review metrics. Testable with plain Node. |
+| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping, review metrics, the agent review export. Testable with plain Node. |
 | `src/agents/` | Agent settings, prompts, output schemas, the harnesses, running a review, and validating its output. |
 | `src/vscode/` | The VS Code surfaces: the review panel, the page builder, the sidebar tree. |
 | `test/` | Unit tests (`node --test`). `fake-vscode.ts` stands in for the `vscode` module. |
@@ -200,7 +200,7 @@ The page is `packages/review-ui` (`index.html`, `app.js`, `styles.css`), plain H
 
 ### Host bridge
 
-The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target)`, `runAgents()`, and for the [review metrics](#review-metrics) `metrics(m)`, `metricsReport(o)` and `metricsExport(o)`. Each becomes a message that names the pull request the page was built for, so a save sent while another pull request loads still goes to its own. Request ids are unique per page, so a late answer can't settle a request from a newer page.
+The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target)`, `runAgents()`, for the [review metrics](#review-metrics) `metrics(m)`, `metricsReport(o)` and `metricsExport(o)`, and for the [agent review export](#agent-review-export) `agentMarkdown(o)`. Each becomes a message that names the pull request the page was built for, so a save sent while another pull request loads still goes to its own. Request ids are unique per page, so a late answer can't settle a request from a newer page.
 
 | Message from the page | What the extension does |
 | --- | --- |
@@ -214,12 +214,28 @@ The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target
 | `metrics` | Appends what the reviewer did to the review metrics log (`DifflineService.metrics`). No answer. |
 | `metricsReport` | Returns the report for a period and grouping (`DifflineService.metricsReport`). |
 | `metricsExport` | Writes the period's events as JSON or finding outcomes as CSV where the reviewer picks, through a save dialog. |
+| `agentMarkdown` | Copies the agent review as Markdown, or saves it through a save dialog (`exportAgentReview`), and returns its size. |
 
-The extension answers `api`, `metricsReport` and `metricsExport` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics.
+The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics.
 
 ### Sidebar
 
 `src/vscode/tree.ts` draws the sidebar from the service's records. `src/core/grouping.ts` groups and sorts them, and the page's list uses the same groups. `src/core/risk.ts` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together.
+
+A row's context value is `pr.<state>` (`idle`, `running` or `elsewhere`), then `.agent` when the pull request has an agent review and `.pinned` when it was opened by hand. `package.json` shows the row's menu entries by matching it.
+
+## Agent review export
+
+**Copy for an agent** on the page and **Diffline: Copy Agent Review as Markdown** (`diffline.copyAgentReview`) turn a pull request's agent review into Markdown for another agent. The extension builds it, because it has the agent file, the diff and the saved review state; the page only asks.
+
+`src/core/review-markdown.ts` is a pure module with its own tests. `reviewMarkdown()` takes the pull request, the agent file, the review data and the review state, and returns the Markdown with the number of findings in it and in the review. Its sections, in order, leaving out empty ones: a title, a note for the receiving agent, Git references (repository, pull request, branches, the reviewed commit and merge base, and the commands to fetch and check it out), Summary, Description check, Findings, Checked and fine, Reading order, Flows (each diagram as a Mermaid `flowchart`, labels escaped by `mermaidText()`), and a footer with the version and date.
+
+- **Which diff.** Line numbers are in the commit the agents reviewed (the agent file's `commit`), not the pull request's current head. `DifflineService.agentReviewMarkdown()` uses the current diff when the head hasn't moved, else review data cached for that commit (`Store.findReviewData()`), else builds it from the clone and caches it. Without that commit, no diff is passed, and findings keep their path and the agent's quote without a line number. When the head moved on, the Git references name it and say everything refers to the reviewed commit.
+- **Lines.** `resolveLine()` finds a `path` and `match` the way the page does, with `AnchorIndex`'s repairs as a fallback. Added and context lines get their number in the reviewed commit and a permalink at it; removed lines get their number at the merge base and a permalink there, marked "(removed line, base side)".
+- **Statuses.** `findingStatus()` reads the saved state with the same rule as `decided()`: open, added to my review (its draft is still pending), posted, or dismissed with the reason. Open only (`openOnly`) leaves out dismissed findings and those in the review.
+- **Safety.** Agent text stays Markdown, but `safeMarkdown()` demotes headings below the finding's, and `codeBlock()` and `code()` use fences longer than any run of backticks inside.
+
+The page calls `DIFFLINE_HOST.agentMarkdown({ mode })` with `copy`, `open` (open findings only) or `save`, after saving a state change that's still waiting, since the extension reads the saved decisions. `exportAgentReview()` in `src/vscode/panel.ts` copies with `vscode.env.clipboard`, or writes the file the save dialog picks at mode 0600, and answers with the character and finding counts for the page's toast. The command takes the sidebar row's pull request or the open review's, else offers a quick pick of the pull requests with an agent review; it copies every finding, and its notification offers **Save as Markdown…**. The Markdown goes nowhere else.
 
 ## Review metrics
 
@@ -262,7 +278,7 @@ A decision has to stay with its finding when the agents run again, so ids come f
 
 The page saves each decision in the review state (`state/<slug>.json`) under the finding's id, with the run it was made on (the agent file's `ranAt`) and the finding's title. A decision from an earlier run whose finding came back shows as decided, "on an earlier run". Decisions on findings that aren't in the current run stay in the state and aren't shown.
 
-Ids used to be positional (`f1`, `f2`, …), so an old decision on one can't be tied to a finding after a re-run. A decision on an id like that counts only when it records the current run, which decisions from before this change don't: their findings show as open. `decided()` in `src/core/service.ts` and `validDecision` in `packages/review-ui/app.js` apply the same rule. A draft whose `fromFinding` is such an id loses the link.
+Ids used to be positional (`f1`, `f2`, …), so an old decision on one can't be tied to a finding after a re-run. A decision on an id like that counts only when it records the current run, which decisions from before this change don't: their findings show as open. `decided()` in `src/core/types.ts` and `validDecision` in `packages/review-ui/app.js` apply the same rule. A draft whose `fromFinding` is such an id loses the link.
 
 ### What an agent ran with
 
