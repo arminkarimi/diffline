@@ -105,7 +105,14 @@ The breakdown shows what each part adds and which files are riskiest. Dismissed 
 
 You mark hunks as reviewed. Marks are tied to each hunk's content, so they survive new pushes when a hunk didn't change. When new commits land, only the hunks they touch come back.
 
-Diffline compares the pull request with the commit of your last review on GitHub. Every line that's new since then gets a blue mark in the margin, and a welcome note says how many hunks in how many files changed. **Only what's new** (`u`) hides the rest.
+A line under the title says where you stand: how and when you last reviewed and what's new since ("You approved this 2 days ago at abc1234 · 3 new commits and 2 new comments since", counting comments by others), "You haven't reviewed this yet", that your review is requested again or was dismissed, or, once it's over, "Merged by Alex Doe 3 days ago" or "Closed 3 days ago without merging".
+
+Diffline compares the pull request with the commit of your last review on GitHub, whether you approved, requested changes or only commented. Every line that's new since then gets a blue mark in the margin, and a welcome note says how many hunks in how many files changed. **Only what's new** (`u`) hides the rest. Closing the welcome note lasts until the next push to that pull request.
+
+- **You never reviewed it.** Every hunk you haven't marked reviewed counts as new.
+- **The branch was rewritten** (a force-push or rebase) since your review. The note says so instead of counting commits. If your clone still has the commit you reviewed, lines that differ from it get the blue mark; if not, every hunk you haven't marked reviewed counts as new.
+
+While a review is open, the sidebar's checks keep watching it. When the pull request is merged, closed, reopened, pushed to or updated on GitHub, a bar at the top of the page says so, with **Refresh**. The page doesn't reload by itself, so you keep your place.
 
 Drafts, reviewed marks, reading order and finding decisions are saved on your computer as you go.
 
@@ -115,7 +122,7 @@ The Workflow tab is the pull request's path to merge, as GitHub reports it:
 
 1. **Checks** on the head commit: failing and running ones first, passed ones summarized.
 2. **Agent review**: each agent and what it found.
-3. **Review**: requested reviewers who haven't reviewed yet, everyone's latest review, your own review and drafts, and whether every high finding has a decision.
+3. **Review**: requested reviewers who haven't reviewed yet, everyone's latest review, your own review (approved, changes requested, commented, dismissed or requested again) and drafts, and whether every high finding has a decision. Once the pull request is merged or closed, this stage says so.
 4. **Merge**: GitHub's merge state, such as ready, blocked, behind the base branch, or conflicting.
 
 A "next step" card at the top says what's waiting, and on whom.
@@ -131,11 +138,13 @@ A "next step" card at the top says what's waiting, and on whom.
 
 ## The sidebar and Home
 
-The Diffline sidebar lists open pull requests. By default they're grouped by how they concern you: review requested from you, assigned to you, you reviewed, you're a code owner, your teams' requests, your pull requests, watched repositories, and ones you opened by hand. **Others you could review**, at the bottom, lists open pull requests in your repositories that nobody asked you to review and that aren't approved yet.
+The Diffline sidebar lists open pull requests. By default they're grouped by how they concern you: review requested from you, assigned to you, you reviewed, you're a code owner, your teams' requests, your pull requests, watched repositories, and ones you opened by hand. **Others you could review** lists open pull requests in your repositories that nobody asked you to review and that aren't approved yet. **Recently merged or closed**, at the bottom, keeps the pull requests you reviewed or wrote for 7 days after they're merged or closed (`diffline.watch.recentlyClosedDays`; 0 turns it off), so you can see how they ended.
 
-**Group** switches to one group per repository. **Sort** orders each group by risk, newest, or most recently updated. Each row shows the risk score and the agents' status: reviewed the latest commit, reviewed an older one, not reviewed, or running (here or in another VS Code window).
+**Group** switches to one group per repository, where merged and closed ones stay in their repository. **Sort** orders each group by risk, newest, or most recently updated. Each row shows the risk score and the agents' status: reviewed the latest commit, reviewed an older one (commits landed since the agents ran), not reviewed, or running (here or in another VS Code window).
 
-**Home** opens the review page on its list of pull requests, with the same groups and order as the sidebar. The list shows each pull request's progress, drafts, open findings and description gaps, and notes when one is stacked on another.
+Each row also says how you reviewed it, when, and what changed since: "you approved 2d ago · new commits", "you commented 5h ago · updated since", "re-requested · you approved 3d ago". It says draft and conflicts, and merged or closed once it's over. The hover adds your review's commit, the pull request's state and its approvals. Your review is fetched for the pull requests you're involved in; team requests, watched repositories and others you could review keep their searches lean, so their rows only say whether you approved or requested changes.
+
+**Home** opens the review page on its list of pull requests, with the same groups and order as the sidebar. The list shows each pull request's progress, drafts, open findings and description gaps, your review and what changed since, draft, conflict, merged and closed badges, and its approvals ("2 approvals", "changes requested by 1") when GitHub's review decision isn't known. It notes when one is stacked on another.
 
 ## Automatic runs
 
@@ -161,6 +170,8 @@ With several VS Code windows open, one window starts the automatic runs, and a p
 Nothing reaches GitHub until you post. **Finish review** collects your summary, line comments and decision: comment, approve or request changes. **Preview what's sent** shows the exact API requests. **Post now** sends one review with your line comments and decision, then your replies, then the thread resolutions you queued. If the review itself fails, the replies and resolutions don't go out.
 
 The review is posted on the commit the page was built from, so comments land on the lines you read. Drafts that posted are removed, and anything that failed stays as a draft. **Refresh** pulls new commits and comments without losing drafts.
+
+Posting on a pull request that's already merged or closed asks first. GitHub still records the review.
 
 Before posting, Diffline refuses a review that contains what looks like a private key, token or password.
 

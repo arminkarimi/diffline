@@ -3,6 +3,11 @@
 ## Unreleased
 
 - **Cursor**: the READMEs say Diffline works in Cursor and how to install it there (`cursor --install-extension`, or **Extensions: Install from VSIX…**).
+- **Your review on every row.** Sidebar rows say how you reviewed a pull request, when, and what changed since: "you approved 2d ago · new commits", "you commented 5h ago · updated since", "re-requested · you approved 3d ago". They also say merged, closed and conflicts. The hover adds your review's commit, the pull request's state and its approvals, and the agents' lines now say "since the agents ran". Rows whose agents reviewed an older commit say `behind` instead of "new commits since".
+- **Recently merged or closed.** Pull requests you reviewed or wrote stay listed for 7 days after they're merged or closed, in a new last group. `diffline.watch.recentlyClosedDays` sets the days; 0 turns it off.
+- **Where you stand on the review page.** A line under the title says how and when you reviewed and what's new since (commits, comments by others, or a rewritten branch), that you haven't reviewed it yet, or who merged it. The status pill and Home rows show approvals when GitHub's review decision isn't known, and Home rows show your review and draft, conflict, merged and closed badges. The Workflow's Review stage shows your review once, and says Merged or Closed when it's over.
+- **Changes while a review is open.** When the open pull request is merged, closed, pushed to or updated on GitHub, a bar on the page offers **Refresh** instead of the page going stale. Posting a review on a merged or closed pull request asks first.
+- **New to you** counts every hunk you haven't marked reviewed when you never reviewed the pull request, and says the branch was rewritten after a force-push instead of counting every commit as new. Closing the Welcome back note lasts until the next push to that pull request, not for every pull request. Times say "1 day ago" from 24 hours instead of 48.
 
 ## 0.2.1
 

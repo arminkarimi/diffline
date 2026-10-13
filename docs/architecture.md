@@ -51,6 +51,10 @@ Settings changes go to `service.configChanged()`. Changes to what's watched, the
 
 Every `diffline.watch.pollSeconds` (60 by default, at least 15), `refresh()` runs one GraphQL search through `gh` (`searchPullRequests` in `src/core/github.ts`). It covers review requests to you by name, assignments, pull requests you reviewed, your own, watched repositories, and ones you opened by hand. Concurrent refreshes share one request. The last list is saved in `globalState`, so it shows at once on the next start.
 
+Each pull request comes back as a summary (`SUMMARY_FRAGMENT`): state, draft, dates (`updatedAt`, `mergedAt`, `closedAt`), head, mergeability, requested reviewers, check counts, and `latestOpinionatedReviews` (each reviewer's latest approval or change request), from which the summary takes `viewerReview` and the approval counts. GitHub stops a query at about 10 seconds, so the list leaves out what's slow to compute: `reviewDecision` isn't fetched, and the viewer's latest review of any state, with its time and commit, is fetched only in the searches the viewer is involved in (review requested, assigned, reviewed, authored, opened by hand, recently closed), through a second fragment, `DifflineMine`, that adds `latestReviews`. Team requests and watched repositories are the large searches, so they stay on the plain fragment: measured on 50 pull requests, `latestReviews` added about 0.6 to 2 seconds to a search. From the viewer's review, `sinceReview()` in `src/core/review-status.ts` derives `newCommits` (the head isn't the commit reviewed) and `updated` (`updatedAt` more than a minute after the review: comments, reviews or the description changed). Where the review isn't fetched, `viewerLastReview` is missing and rows fall back to `viewerReview`.
+
+**Recently merged or closed.** With `diffline.watch.recentlyClosedDays` above 0 (7 by default), `searchClosed()` runs two more searches, up to 20 pull requests each: closed ones you reviewed and, with `diffline.watch.authored`, ones you wrote, closed within those days. They go as a request of their own, in parallel with the main search: inside it they made it about twice as slow, so the list waits about as long as before. A failed closed search keeps the last ones found. Their rows go in the last group, **Recently merged or closed**, and their changed files aren't fetched.
+
 Pull requests that leave every search are dropped, unless they were opened by hand or their agents are running.
 
 ### Background searches
@@ -59,7 +63,7 @@ Once the list shows, `refreshExtras()` runs the slower work, each step best effo
 
 - **Team requests**, which can run to a hundred pull requests and make GitHub's search slow.
 - **Others you could review** (`searchReviewable`): open, ready pull requests in your repositories that aren't yours, weren't requested from you, and aren't approved.
-- **Changed files** for rows the search returned without them, 20 pull requests per query, cached by head commit. The risk score needs them.
+- **Changed files** for open rows the search returned without them, 20 pull requests per query, cached by head commit. The risk score needs them.
 - **Code owners** (`markCodeOwned`): your teams and each repository's `CODEOWNERS` (from the default branch, in GitHub's three locations), both cached for an hour. `src/core/codeowners.ts` matches paths with GitHub's rules: the last matching line wins.
 
 After a refresh, `warmUp()` builds the diffs of up to 10 pull requests that request your review or were opened by hand, so opening them is quick.
@@ -123,6 +127,11 @@ The managed clone keeps the `gh auth git-credential` helper in its own config, f
 - File contents through one `git cat-file --batch` process: each changed file at the head (up to 3,000 lines, for context), npm lockfiles and their `package.json` before and after (for the package summary), and a few repository files the page reads.
 - A test hint per source file: its test file, and whether it changed.
 - With `since` (the commit of your last review on GitHub), the lines and hunks that are new since then.
+
+`since` is the commit of the viewer's newest submitted review of any state (approved, changes requested, commented or dismissed), when it isn't the head and the clone has it. The page counts "New to you" from it:
+
+- **Never reviewed**: no `since`, and every hunk not marked reviewed counts as new.
+- **Branch rewritten** (the reviewed commit isn't among the pull request's commits): the welcome note says so rather than counting commits. While the clone has the commit, the diff against it still marks the lines that differ, so a rebase that didn't touch the pull request's lines marks nothing. Without it there's nothing to compare with, and every hunk not marked reviewed counts as new.
 
 Built data is cached in the store by head and `since`, so reopening a pull request is instant. The service shares builds in progress, so opening a pull request that's being warmed up waits for that build.
 
@@ -216,11 +225,15 @@ The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target
 | `metricsExport` | Writes the period's events as JSON or finding outcomes as CSV where the reviewer picks, through a save dialog. |
 | `agentMarkdown` | Copies the agent review as Markdown, or saves it through a save dialog (`exportAgentReview`), and returns its size. |
 
-The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics.
+The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics, and `host-pr-changed` when the open pull request changed on GitHub (below).
+
+### Changes while a page is open
+
+The page isn't rebuilt when GitHub changes, so the reader keeps their place. After each list refresh and the background team search, the service emits `pullRequestChanged` for every row whose state, head or `updatedAt` moved. `extension.ts` passes it to `ReviewPanel.noticeChange()`, which compares the list's summary with what the page on screen was built from (`prChange()` in `src/core/review-status.ts`; a summary not newer than the page never counts) and posts `{ type: "host-pr-changed", key, change }` once per distinct change. `change.kind` is the most important one: `merged`, `closed`, `reopened`, `commits` or `updated`. The page shows one notice bar with **Refresh**, which saves, sends `POST /refresh` and reloads. A notice that the pull request was merged or closed also makes **Post now** ask first. A pull request that leaves every search (merged, and neither reviewed nor written by the viewer) loses its row, so no notice comes for it.
 
 ### Sidebar
 
-`src/vscode/tree.ts` draws the sidebar from the service's records. `src/core/grouping.ts` groups and sorts them, and the page's list uses the same groups. `src/core/risk.ts` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together.
+`src/vscode/tree.ts` draws the sidebar from the service's records. `src/core/grouping.ts` groups and sorts them, and the page's list uses the same groups. Merged and closed pull requests go in **Recently merged or closed**, last, when grouped by relationship, and stay in their repository when grouped by repository. `src/core/row-text.ts` writes a row's description and hover: your review and what changed since, the state, approvals, and the agents' status, said as since the agents ran. `src/core/risk.ts` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together.
 
 A row's context value is `pr.<state>` (`idle`, `running` or `elsewhere`), then `.agent` when the pull request has an agent review and `.pinned` when it was opened by hand. `package.json` shows the row's menu entries by matching it.
 
