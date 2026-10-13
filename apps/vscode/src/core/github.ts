@@ -87,7 +87,8 @@ fragment DifflineSummary on PullRequest {
 /**
  * The summary plus your latest review of any state (latestReviews: each reviewer's latest, comments included), for
  * the searches you're involved in. Measured on 50 pull requests, latestReviews added about 0.6-2 seconds to a search,
- * so team requests, watched repositories and others don't ask for it: their searches are the large ones.
+ * so team requests, watched repositories and others don't ask for it: their searches are the large ones. Asking for
+ * your own latest review only (reviews(author: $login, last: 1)) was measured too and wasn't faster on the main search.
  */
 const MINE_FRAGMENT = `
 fragment DifflineMine on PullRequest {

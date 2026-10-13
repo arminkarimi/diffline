@@ -454,7 +454,7 @@
         "diffline.watch.teamRequests": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "List pull requests that request a review from one of your teams. Agents don't run on these automatically; use Run Agents."
+          "markdownDescription": "List pull requests that request a review from one of your teams. They load a few seconds after the rest of the list, then refresh every 5 minutes (Refresh checks at once). Agents don't run on these automatically; use Run Agents."
         },
         "diffline.watch.assigned": {
           "type": "boolean",
@@ -474,7 +474,7 @@
         "diffline.watch.othersToReview": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "At the bottom of the list, show open pull requests in your repositories that nobody asked you to review, that aren't yours and aren't approved yet. Your repositories are the ones in your other groups plus watched ones."
+          "markdownDescription": "At the bottom of the list, show open pull requests in your repositories that nobody asked you to review, that aren't yours and aren't approved yet. Your repositories are the ones in your other groups plus watched ones. They load a few seconds after the rest of the list, then refresh every 5 minutes (Refresh checks at once)."
         },
         "diffline.sidebar.groupBy": {
           "type": "string",
@@ -528,14 +528,14 @@
           "type": "integer",
           "default": 60,
           "minimum": 15,
-          "markdownDescription": "How often to check GitHub for new pull requests and pushes, in seconds."
+          "markdownDescription": "How often to check GitHub for new pull requests and pushes, in seconds. Your teams' requests and pull requests you could review refresh every 5 minutes, recently merged or closed ones every 10; Refresh checks everything at once."
         },
         "diffline.watch.recentlyClosedDays": {
           "type": "integer",
-          "default": 7,
+          "default": 3,
           "minimum": 0,
           "maximum": 90,
-          "markdownDescription": "Keep pull requests you reviewed or wrote listed for this many days after they're merged or closed, under **Recently merged or closed**, so you can see how they ended. 0 turns it off."
+          "markdownDescription": "Keep pull requests you reviewed or wrote listed for this many days after they're merged or closed, under **Recently merged or closed**, so you can see how they ended. They load after the rest of the list, then every 10 minutes, when a pull request leaves the list and when you press Refresh. 0 turns it off."
         },
         "diffline.clones": {
           "type": "object",

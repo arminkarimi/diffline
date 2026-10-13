@@ -41,7 +41,7 @@ export interface ServiceConfig {
     pollSeconds: number;
     /**
      * diffline.watch.recentlyClosedDays: keep pull requests you reviewed or wrote listed for this many days after
-     * they're merged or closed, under Recently merged or closed. 0 turns it off; missing means 7.
+     * they're merged or closed, under Recently merged or closed. 0 turns it off; missing means 3.
      */
     recentlyClosedDays?: number;
   };
@@ -200,6 +200,31 @@ const keyOf = (s: PullRequestSummary): PrKey => {
   const [owner, name] = s.repo.split("/");
   return { owner, name, number: s.number };
 };
+const idOf = (s: PullRequestSummary) => prKeyString(keyOf(s)).toLowerCase();
+type Reason = PullRequestSummary["reasons"][number];
+const BACKGROUND: Reason[] = ["team-requested", "other"];
+const addReasons = (s: PullRequestSummary, more: readonly Reason[]): PullRequestSummary => {
+  const reasons = [...new Set([...s.reasons, ...more])];
+  return reasons.length === s.reasons.length ? s : { ...s, reasons };
+};
+
+/** Default for diffline.watch.recentlyClosedDays. */
+export const RECENTLY_CLOSED_DAYS = 3;
+
+/**
+ * When the parts of the list other than the main search run. The main search (review requests, assigned, reviewed,
+ * yours, watched, pinned) runs at start and every poll, and the list shows as soon as it answers. Recently merged or
+ * closed pull requests load after it at start, then every 10 minutes, and right away when a pull request leaves the
+ * main search (it may have just merged). Team requests and pull requests you could review first load a few seconds
+ * after the list shows, so they don't compete with it, then every 5 minutes. Both are checked at each poll, and a
+ * manual refresh runs everything at once.
+ */
+export interface RefreshTiming {
+  closedEveryMs: number;
+  extrasDelayMs: number;
+  extrasEveryMs: number;
+}
+export const REFRESH_TIMING: RefreshTiming = { closedEveryMs: 10 * 60_000, extrasDelayMs: 5_000, extrasEveryMs: 5 * 60_000 };
 
 export class DifflineService extends EventEmitter {
   readonly store: Store;
@@ -220,17 +245,40 @@ export class DifflineService extends EventEmitter {
   lastRefresh: number | null = null;
   totals: Record<string, { shown: number; total: number }> = {};
   private refreshing: Promise<void> | null = null;
+  /** A manual refresh asked for everything: the background searches run when the main search is done. */
+  private fullPending = false;
+  private readonly timing: RefreshTiming;
   private extrasRunning = false;
+  /** When the background searches last started (0: not yet), and the timer for their first, delayed load. */
+  private extrasAt = 0;
+  private extrasTimer: NodeJS.Timeout | null = null;
+  private closedRunning: Promise<void> | null = null;
+  private closedAgain = false;
+  /** When the recently-closed search last started (0: not yet). */
+  private closedAt = 0;
+  private followUpRunning = false;
+  private followUpAgain = false;
   private treesCleaned = false;
   /**
    * Results of the background searches (team requests, pull requests you could review), kept between searches so
-   * rows don't flicker while the main search refreshes.
+   * rows don't flicker while the main search refreshes. Starts with the last session's, until they run again.
    */
   private extras = new Map<string, PullRequestSummary>();
   private extraTotals: Partial<Record<"team", { shown: number; total: number }>> = {};
-  /** The last recently-closed search's results, kept when one fails so merged pull requests don't drop out. */
+  /**
+   * The last recently-closed search's results, kept between searches (and when one fails) so merged pull requests
+   * don't drop out. Starts with the last session's, until it runs again.
+   */
   private closedItems = new Map<string, PullRequestSummary>();
   private closedTotals: { shown: number; total: number } | null = null;
+  /** What the last main search found and counted. */
+  private mainIds = new Set<string>();
+  private mainTotals: Record<string, { shown: number; total: number }> = {};
+  /**
+   * Pull requests that left the main search and aren't among the recently closed ones yet: they keep their row until
+   * the recently-closed search, which runs at once, says whether they merged or closed.
+   */
+  private leftMain = new Set<string>();
   /** Pull requests whose changed files you or your teams own, as lowercase keys. */
   private codeOwned = new Set<string>();
   /** Changed files by pull request and head, so a refresh doesn't fetch them again. */
@@ -250,9 +298,10 @@ export class DifflineService extends EventEmitter {
   /** The extension's version, for the agent review export's footer. */
   readonly version: string | undefined;
 
-  constructor(opts: { store: Store; repos: Repos; memory: Memory; config: () => ServiceConfig; log: (line: string) => void; version?: string }) {
+  constructor(opts: { store: Store; repos: Repos; memory: Memory; config: () => ServiceConfig; log: (line: string) => void; version?: string; timing?: Partial<RefreshTiming> }) {
     super();
     this.version = opts.version;
+    this.timing = { ...REFRESH_TIMING, ...opts.timing };
     this.store = opts.store;
     this.repos = opts.repos;
     this.memory = opts.memory;
@@ -261,11 +310,22 @@ export class DifflineService extends EventEmitter {
     this.limiter = new Semaphore(this.config().agents.maxParallel);
     this.locks = new Locks(path.join(this.store.root, "locks"));
     this.metricsLog = new MetricsLog(path.join(this.store.root, "metrics"), { enabled: () => this.config().metrics?.enabled !== false, log: this.log });
-    // Show the last known list right away; the first refresh replaces it.
+    // Show the last known list right away; the first refresh replaces it. The rows the background searches found stay
+    // until those searches run again, a little after the main search, so they don't drop out and come back.
     for (const s of this.memory.get<PullRequestSummary[]>("lastList", [])) {
       const key = keyOf(s);
-      this.records.set(prKeyString(key).toLowerCase(), { ...this.blank(key), summary: s });
+      const id = prKeyString(key).toLowerCase();
+      this.records.set(id, { ...this.blank(key), summary: s });
+      const reasons = s.reasons || [];
+      if (reasons.includes("recently-closed")) this.closedItems.set(id, { ...s, reasons: ["recently-closed"] });
+      const background = reasons.filter((x) => BACKGROUND.includes(x));
+      if (background.length) this.extras.set(id, { ...s, reasons: background });
+      if (reasons.some((x) => x !== "recently-closed" && x !== "code-owner" && !BACKGROUND.includes(x))) this.mainIds.add(id);
     }
+    const totals = this.memory.get<Record<string, { shown: number; total: number }>>("lastTotals", {});
+    if (totals.team) this.extraTotals = { team: totals.team };
+    if (totals.closed) this.closedTotals = totals.closed;
+    this.totals = { ...totals };
     for (const k of this.memory.get<string[]>("pinned", [])) {
       const key = parseKey(k);
       if (key) this.record(key).pinned = true;
@@ -324,6 +384,11 @@ export class DifflineService extends EventEmitter {
     this.timer = this.dueTimer = null;
   }
 
+  /** diffline.watch.recentlyClosedDays as a whole number of days, 0 for off. */
+  private closedDays(): number {
+    return Math.max(0, Math.floor(this.config().watch.recentlyClosedDays ?? RECENTLY_CLOSED_DAYS));
+  }
+
   /** Settings changed. Nothing here asks GitHub: changing how the list is sorted shouldn't search again. */
   configChanged(): void {
     this.limiter.resize(this.config().agents.maxParallel);
@@ -334,56 +399,168 @@ export class DifflineService extends EventEmitter {
     }
   }
 
-  /** Check GitHub for pull requests and pushes. Concurrent calls share one request. */
-  refresh(): Promise<void> {
+  /**
+   * Check GitHub for pull requests and pushes: the main search, then the background parts when they're due (see
+   * RefreshTiming). Resolves once the main search's list shows. `full` (the Refresh command, a settings change) runs
+   * the background parts right away too. Concurrent calls share one request.
+   */
+  refresh(opts: { full?: boolean } = {}): Promise<void> {
+    if (opts.full) this.fullPending = true;
     if (!this.refreshing) {
       this.refreshing = this.doRefresh().finally(() => {
         this.refreshing = null;
       });
+      return this.refreshing;
     }
-    return this.refreshing;
+    // A refresh already under way may have passed the point where it looks for a full one.
+    return opts.full
+      ? this.refreshing.then(() => {
+          if (!this.fullPending) return;
+          this.fullPending = false;
+          this.runBackground(true, false);
+        })
+      : this.refreshing;
   }
 
-  /** Recently closed pull requests you reviewed or wrote: a request of its own, sent alongside the main search. */
-  private async searchClosed(days: number, authored: boolean): Promise<void> {
+  /** The totals of every search: the main one's, with the background searches' last counts. */
+  private updateTotals(): void {
+    const totals: Record<string, { shown: number; total: number }> = { ...this.mainTotals, ...this.extraTotals };
+    if (this.closedTotals) totals.closed = this.closedTotals;
+    this.totals = totals;
+  }
+
+  /** Remember the list for the next start, so it shows at once. */
+  private saveList(): void {
+    void this.memory.update("lastList", this.all().map((r) => r.summary).filter(Boolean));
+    void this.memory.update("lastTotals", this.totals);
+  }
+
+  /** Start the background parts of the list that are due, after the main search showed it. */
+  private runBackground(full: boolean, left: boolean): void {
+    const now = Date.now();
+    if (full || left || !this.closedAt || now - this.closedAt >= this.timing.closedEveryMs) void this.refreshClosed();
+    if (full || (this.extrasAt && now - this.extrasAt >= this.timing.extrasEveryMs)) {
+      if (this.extrasTimer) clearTimeout(this.extrasTimer);
+      this.extrasTimer = null;
+      void this.refreshExtras();
+    } else if (!this.extrasAt && !this.extrasTimer) {
+      this.extrasTimer = setTimeout(() => {
+        this.extrasTimer = null;
+        void this.refreshExtras();
+      }, this.timing.extrasDelayMs);
+      this.extrasTimer.unref?.();
+    }
+    // Changed files and code owners for rows that need them, on every refresh: new rows and new pushes.
+    void this.followUp();
+  }
+
+  /** Recently closed pull requests you reviewed or wrote: a request of its own, after the main search. Concurrent calls share one. */
+  private refreshClosed(): Promise<void> {
+    if (this.closedRunning) {
+      this.closedAgain = true;
+      return this.closedRunning;
+    }
+    this.closedRunning = this.searchClosed().finally(() => {
+      this.closedRunning = null;
+      if (this.closedAgain) {
+        this.closedAgain = false;
+        void this.refreshClosed();
+      }
+    });
+    return this.closedRunning;
+  }
+
+  private async searchClosed(): Promise<void> {
+    this.closedAt = Date.now();
+    const days = this.closedDays();
     if (days <= 0) {
-      this.closedItems = new Map();
       this.closedTotals = null;
+      await this.applyClosed(new Map());
       return;
     }
     try {
-      const res = await searchPullRequests({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days, authored } });
+      const res = await searchPullRequests({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days, authored: this.config().watch.authored } });
       for (const e of res.errors || []) this.log(`Recently closed: ${e}`);
-      this.closedItems = new Map(res.items.map((s) => [prKeyString(keyOf(s)).toLowerCase(), s]));
       this.closedTotals = res.totals.closed;
+      await this.applyClosed(new Map(res.items.map((s) => [idOf(s), s])));
     } catch (err) {
       // The last ones found stay until the search works again.
       this.log(`Couldn't load recently merged or closed pull requests: ${err instanceof Error ? err.message : err}`);
     }
   }
 
+  /**
+   * Put the recently-closed search's results in the list. One the main search also found (pinned, say) keeps both
+   * reasons; ones it no longer returns, and ones that left the main search without being merged or closed, go.
+   */
+  private async applyClosed(found: Map<string, PullRequestSummary>): Promise<void> {
+    const before = this.closedItems;
+    this.closedItems = found;
+    const moved: PrKey[] = [];
+    const added: PrRecord[] = [];
+    for (const [id, item] of found) {
+      const r = this.records.get(id) ?? this.record(keyOf(item));
+      if (this.mainIds.has(id)) {
+        if (r.summary) r.summary = addReasons(r.summary, item.reasons);
+        continue;
+      }
+      if (!r.summary) added.push(r);
+      const extra = this.extras.get(id);
+      const merged = extra ? addReasons(item, extra.reasons) : item;
+      if (r.summary?.headRefOid !== item.headRefOid) r.headSeenAt = Date.now();
+      if (changedOnGitHub(r.summary, merged)) moved.push(r.key);
+      r.summary = this.withKnown(id, merged);
+    }
+    for (const id of new Set([...before.keys(), ...this.leftMain])) {
+      const r = this.records.get(id);
+      if (found.has(id) || !r) continue;
+      if (this.mainIds.has(id) || this.extras.has(id) || r.pinned || ["queued", "running"].includes(r.run.state)) {
+        if (r.summary?.reasons.includes("recently-closed")) r.summary = { ...r.summary, reasons: r.summary.reasons.filter((x) => x !== "recently-closed") };
+      } else this.records.delete(id);
+    }
+    this.leftMain = new Set();
+    await Promise.all(added.map((r) => this.loadAgentSummary(r)));
+    this.updateTotals();
+    this.saveList();
+    this.changed();
+    for (const key of moved) this.emit("pullRequestChanged", key);
+  }
+
   private async doRefresh(): Promise<void> {
     const cfg = this.config();
     const pinned = this.all().filter((r) => r.pinned).map((r) => r.key);
     try {
-      const [res] = await Promise.all([
-        searchPullRequests({
-          direct: cfg.watch.direct,
-          // Team requests can run to a hundred pull requests, which makes GitHub's search slow; they load in the
-          // background (refreshExtras) so the list shows at once.
-          team: false,
-          assigned: cfg.watch.assigned,
-          reviewed: cfg.watch.reviewed,
-          authored: cfg.watch.authored,
-          repositories: cfg.watch.repositories,
-          pinned,
-        }),
-        this.searchClosed(Math.max(0, Math.floor(cfg.watch.recentlyClosedDays ?? 7)), cfg.watch.authored),
-      ]);
+      const res = await searchPullRequests({
+        direct: cfg.watch.direct,
+        // Team requests can run to a hundred pull requests, which makes GitHub's search slow; they load in the
+        // background (refreshExtras) so the list shows at once. So do recently closed ones (refreshClosed).
+        team: false,
+        assigned: cfg.watch.assigned,
+        reviewed: cfg.watch.reviewed,
+        authored: cfg.watch.authored,
+        repositories: cfg.watch.repositories,
+        pinned,
+      });
       this.viewer = res.viewer;
-      this.totals = { ...res.totals, ...this.extraTotals, ...(this.closedTotals ? { closed: this.closedTotals } : {}) };
+      // The background searches' counts stay until they run again.
+      const { team: _team, closed: _closed, ...mainTotals } = res.totals;
+      this.mainTotals = mainTotals;
+      this.updateTotals();
       this.lastError = res.errors && res.errors.length ? res.errors.join("; ") : null;
-      const seen = new Set<string>();
+      // A pull request that left the main search may have just merged or closed: it keeps its row, and the
+      // recently-closed search runs at once to say.
+      const mainIds = new Set(res.items.map(idOf));
+      let left = false;
+      if (this.closedDays() > 0) {
+        for (const id of this.mainIds) {
+          if (mainIds.has(id) || this.closedItems.has(id) || this.leftMain.has(id) || !this.records.has(id)) continue;
+          this.leftMain.add(id);
+          left = true;
+        }
+      }
+      for (const id of mainIds) this.leftMain.delete(id);
+      this.mainIds = mainIds;
+      const seen = new Set<string>(this.leftMain);
       // Recently closed ones join the main search's; a pinned one that closed has both reasons.
       const items = res.items.map((s) => {
         const closed = this.closedItems.get(prKeyString(keyOf(s)).toLowerCase());
@@ -414,10 +591,12 @@ export class DifflineService extends EventEmitter {
       await Promise.all(this.all().map((r) => this.loadAgentSummary(r)));
       await this.syncOtherWindows();
       this.lastRefresh = Date.now();
-      void this.memory.update("lastList", this.all().map((r) => r.summary).filter(Boolean));
+      this.saveList();
       this.changed();
       for (const key of moved) this.emit("pullRequestChanged", key);
-      void this.refreshExtras();
+      const full = this.fullPending;
+      this.fullPending = false;
+      this.runBackground(full, left);
       this.scheduleAutomaticRuns();
       this.offerStops();
       void this.warmUp();
@@ -461,12 +640,13 @@ export class DifflineService extends EventEmitter {
   }
 
   /**
-   * After the list shows: find pull requests you could review in your repositories, fill in changed files for risk
-   * scores, and mark the ones that change files you or your teams own. Every step is optional and best effort.
+   * After the list shows (see RefreshTiming): your teams' review requests and pull requests you could review in your
+   * repositories. Every step is optional and best effort.
    */
   private async refreshExtras(): Promise<void> {
     if (this.extrasRunning) return;
     this.extrasRunning = true;
+    this.extrasAt = Date.now();
     const cfg = this.config().watch;
     try {
       const found = new Map<string, PullRequestSummary>();
@@ -477,13 +657,13 @@ export class DifflineService extends EventEmitter {
           for (const e of res.errors || []) this.log(`Team requests: ${e}`);
           for (const item of res.items) found.set(prKeyString(keyOf(item)).toLowerCase(), item);
           this.extraTotals = { team: res.totals.team };
-          this.totals = { ...this.totals, ...this.extraTotals };
           searched = true;
         } catch (err) {
           this.log(`Couldn't load team requests: ${err instanceof Error ? err.message : err}`);
           for (const [id, item] of this.extras) if (item.reasons.includes("team-requested")) found.set(id, item);
         }
       } else this.extraTotals = {};
+      this.updateTotals();
       if (cfg.others) {
         try {
           // Your repositories include the ones team requests just brought in.
@@ -501,10 +681,30 @@ export class DifflineService extends EventEmitter {
         }
       }
       if (searched || this.extras.size) this.applyExtras(found);
-      await this.fillFiles();
-      if (cfg.codeOwners) await this.markCodeOwned();
     } finally {
       this.extrasRunning = false;
+    }
+    await this.followUp();
+  }
+
+  /**
+   * Fill in changed files for risk scores, and mark the pull requests that change files you or your teams own. After
+   * every refresh and every background search; one at a time, and once more when asked again meanwhile.
+   */
+  private async followUp(): Promise<void> {
+    if (this.followUpRunning) {
+      this.followUpAgain = true;
+      return;
+    }
+    this.followUpRunning = true;
+    try {
+      do {
+        this.followUpAgain = false;
+        await this.fillFiles();
+        if (this.config().watch.codeOwners) await this.markCodeOwned();
+      } while (this.followUpAgain);
+    } finally {
+      this.followUpRunning = false;
     }
   }
 
@@ -534,6 +734,7 @@ export class DifflineService extends EventEmitter {
         r.summary = { ...r.summary, reasons: r.summary.reasons.filter((x) => !gone.has(x) || x === "code-owner") };
       }
     }
+    this.saveList();
     this.changed();
     for (const key of moved) this.emit("pullRequestChanged", key);
   }
@@ -1193,6 +1394,8 @@ export class DifflineService extends EventEmitter {
 
   dispose(): void {
     this.stop();
+    if (this.extrasTimer) clearTimeout(this.extrasTimer);
+    this.extrasTimer = null;
     for (const c of this.controllers.values()) c.abort();
     void this.locks.releaseAll();
   }

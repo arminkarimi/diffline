@@ -4,7 +4,7 @@ import { GUIDE, shortName } from "./agents/defaults.ts";
 import { HARNESS_IDS, HARNESS_NAME, harnessVersion, isHarnessId, listPiModels, PI_THINKING, piModelThinking, type HarnessConfig, type HarnessId } from "./agents/harness.ts";
 import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, removeAgent, resetSettings, setAgentHarness, setAgentModel, settingsDir, settingsFile } from "./agents/settings.ts";
 import { Repos } from "./core/repos.ts";
-import { approverWords, DifflineService, parseKey, type ApprovedPolicy, type ServiceConfig } from "./core/service.ts";
+import { approverWords, DifflineService, parseKey, RECENTLY_CLOSED_DAYS, type ApprovedPolicy, type ServiceConfig } from "./core/service.ts";
 import { Store } from "./core/store.ts";
 import type { AgentFailure } from "./agents/review.ts";
 import type { AgentFile, AgentId, PrKey } from "./core/types.ts";
@@ -43,7 +43,7 @@ function readConfig(): ServiceConfig {
       authored: c.get<boolean>("watch.authored", true),
       repositories: c.get<string[]>("watch.repositories", []),
       pollSeconds: c.get<number>("watch.pollSeconds", 60),
-      recentlyClosedDays: c.get<number>("watch.recentlyClosedDays", 7),
+      recentlyClosedDays: c.get<number>("watch.recentlyClosedDays", RECENTLY_CLOSED_DAYS),
     },
     agents: {
       autoRun: c.get<boolean>("agents.autoRun", true),
@@ -364,8 +364,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
 
   const command = (id: string, fn: (...args: any[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
+  // Refresh checks everything at once: the main list, recently closed pull requests, team requests and others.
   command("diffline.refresh", async () => {
-    await vscode.window.withProgress({ location: { viewId: "diffline.pullRequests" } }, () => service.refresh().catch((err) => vscode.window.showErrorMessage(`Diffline: ${err.message}`)));
+    await vscode.window.withProgress({ location: { viewId: "diffline.pullRequests" } }, () => service.refresh({ full: true }).catch((err) => vscode.window.showErrorMessage(`Diffline: ${err.message}`)));
   });
   command("diffline.open", async (arg: unknown) => {
     const key = keyFrom(arg, panel);
@@ -589,7 +590,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
       if (e.affectsConfiguration("diffline")) {
         service.configChanged();
         // What's listed, automatic runs and clones show after a refresh; sorting, grouping and harnesses don't need one.
-        if (["diffline.watch", "diffline.agents", "diffline.clones"].some((s) => e.affectsConfiguration(s))) void service.refresh().catch(() => undefined);
+        // A change to what's watched searches everything again, the background searches included.
+        if (["diffline.watch", "diffline.agents", "diffline.clones"].some((s) => e.affectsConfiguration(s))) void service.refresh({ full: e.affectsConfiguration("diffline.watch") }).catch(() => undefined);
       }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => repos.reset()),

@@ -4,16 +4,28 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { setGhRunner } from "../src/core/github.ts";
-import { approvedBy, approverWords, DifflineService, isApproved, type ServiceConfig } from "../src/core/service.ts";
+import { closedSince, mergeSearchResults, setGhRunner } from "../src/core/github.ts";
+import { approvedBy, approverWords, DifflineService, isApproved, RECENTLY_CLOSED_DAYS, REFRESH_TIMING, type RefreshTiming, type ServiceConfig } from "../src/core/service.ts";
 import { Store } from "../src/core/store.ts";
 import { ensureSampleRepo } from "./fixtures/make-sample-repo.ts";
 
 const SAMPLE = ensureSampleRepo();
 
-function config(over: { pollSeconds?: number; metrics?: boolean; closedDays?: number } = {}): ServiceConfig {
+function config(over: { pollSeconds?: number; metrics?: boolean; closedDays?: number | null; team?: boolean; others?: boolean } = {}): ServiceConfig {
   return {
-    watch: { direct: true, team: false, assigned: false, reviewed: false, codeOwners: false, others: false, authored: true, repositories: [], pollSeconds: over.pollSeconds ?? 60, recentlyClosedDays: over.closedDays ?? 0 },
+    watch: {
+      direct: true,
+      team: over.team ?? false,
+      assigned: false,
+      reviewed: false,
+      codeOwners: false,
+      others: over.others ?? false,
+      authored: true,
+      repositories: [],
+      pollSeconds: over.pollSeconds ?? 60,
+      // null: the setting is missing, so the default applies.
+      ...(over.closedDays === null ? {} : { recentlyClosedDays: over.closedDays ?? 0 }),
+    },
     agents: { autoRun: false, enabled: ["guide"], maxParallel: 1, quietPeriodSeconds: 0, maxAutomaticRuns: 5, skipDrafts: true, timeoutMinutes: 1, autoRunMaxFiles: 100, autoRunMaxLines: 5000 },
     harnesses: { default: "claude", claude: { id: "claude", command: "claude", model: "sonnet", extraArgs: [] }, codex: { id: "codex", command: "codex", model: "", extraArgs: [] }, pi: { id: "pi", command: "pi", model: "", extraArgs: [], thinking: "" } },
     sidebar: { groupBy: "relationship", sortBy: "risk", othersLimit: 10 },
@@ -21,11 +33,12 @@ function config(over: { pollSeconds?: number; metrics?: boolean; closedDays?: nu
   };
 }
 
-async function makeService(opts: { root?: string; repos?: unknown; config?: () => ServiceConfig; log?: (line: string) => void } = {}) {
+async function makeService(opts: { root?: string; repos?: unknown; config?: () => ServiceConfig; log?: (line: string) => void; memory?: Map<string, unknown>; timing?: Partial<RefreshTiming> } = {}) {
   const store = new Store(opts.root ?? (await mkdtemp(path.join(os.tmpdir(), "diffline-service-"))));
   await store.init();
-  const memory = new Map<string, unknown>();
+  const memory = opts.memory ?? new Map<string, unknown>();
   return new DifflineService({
+    timing: opts.timing,
     store,
     repos: (opts.repos ?? { reset() {}, async cleanTrees() {} }) as any,
     memory: { get: (k, f) => (memory.has(k) ? (memory.get(k) as any) : f), update: async (k, v) => void memory.set(k, v) },
@@ -438,62 +451,239 @@ function mineNode(number: number, over: Record<string, unknown> = {}) {
   };
 }
 
-test("refresh: recently closed pull requests come from a request of their own, keep their row, and changes are announced", async () => {
-  let open: any[] = [mineNode(1)];
-  let closed: any[] | Error = [mineNode(2, { state: "MERGED", mergedAt: "2026-10-06T00:00:00Z", closedAt: "2026-10-06T00:00:00Z", updatedAt: "2026-10-06T00:00:00Z", reviewRequests: { nodes: [] } })];
-  const queries: string[] = [];
+/** Wait until a condition holds (background searches finish on their own). */
+async function until(cond: () => boolean | Promise<boolean>, what: string, ms = 3000): Promise<void> {
+  const end = performance.now() + ms;
+  while (!(await cond())) {
+    if (performance.now() > end) throw new Error(`Timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+const NO_CLONE = { reset() {}, async cleanTrees() {}, resolve: async () => Promise.reject(new Error("no clone")) };
+
+/**
+ * A fake GitHub for the list's searches: the main search, recently closed, team requests and others, each counted in
+ * `calls` as it starts. A gate holds a search until it's opened, to see what shows before it answers.
+ */
+function fakeGitHub(opts: { open: () => any[]; closed?: () => any[] | Error; team?: () => any[]; gate?: Partial<Record<"closed" | "team", Promise<void>>> }) {
+  const calls: string[] = [];
+  const variables: Record<string, string> = {};
   setGhRunner(async (args) => {
     const query = args.find((a) => a.startsWith("query=")) || "";
-    // Preparing #1's diff ahead of time asks for its detail; not part of this test.
-    if (query.includes("pullRequest(number: $number)")) return { code: 1, stdout: "", stderr: "HTTP 404: Not Found", killed: false };
-    queries.push(query.includes("closedReviewed: search") ? "closed" : "main");
-    if (query.includes("closedReviewed: search")) {
-      assert.ok(args.some((a) => /^closedReviewed=is:pr is:closed reviewed-by:@me -author:@me closed:>=\d{4}-\d\d-\d\d /.test(a)));
-      assert.doesNotMatch(query, /direct: search/, "the open searches aren't in it");
-      if (closed instanceof Error) return { code: 1, stdout: "", stderr: "HTTP 502: Bad Gateway", killed: false };
-      const data = { viewer: { login: "me", name: null }, closedReviewed: { issueCount: 5, nodes: closed }, closedAuthored: { issueCount: 0, nodes: [] } };
-      return { code: 0, stdout: JSON.stringify({ data }), stderr: "", killed: false };
+    for (const a of args) {
+      const m = /^(\w+)=(.*)$/s.exec(a);
+      if (m && m[1] !== "query") variables[m[1]] = m[2];
     }
-    assert.doesNotMatch(query, /closedReviewed/);
-    const data = { viewer: { login: "me", name: null }, direct: { issueCount: open.length, nodes: open }, authored: { issueCount: 0, nodes: [] } };
-    return { code: 0, stdout: JSON.stringify({ data }), stderr: "", killed: false };
+    const kind = query.includes("closedReviewed: search") ? "closed" : query.includes("direct: search") ? "main" : query.includes("team: search") ? "team" : query.includes("others0: search") ? "others" : "other";
+    calls.push(kind);
+    const ok = (data: unknown) => ({ code: 0, stdout: JSON.stringify({ data: { viewer: { login: "me", name: null }, ...(data as object) } }), stderr: "", killed: false });
+    if (kind === "closed" || kind === "team") await opts.gate?.[kind];
+    if (kind === "main") {
+      assert.doesNotMatch(query, /closedReviewed|team: search/, "the main search has neither recently closed nor team requests");
+      const nodes = opts.open();
+      return ok({ direct: { issueCount: nodes.length, nodes }, authored: { issueCount: 0, nodes: [] } });
+    }
+    if (kind === "closed") {
+      const closed = opts.closed?.() ?? [];
+      if (closed instanceof Error) return { code: 1, stdout: "", stderr: "HTTP 502: Bad Gateway", killed: false };
+      return ok({ closedReviewed: { issueCount: closed.length + 4, nodes: closed }, closedAuthored: { issueCount: 0, nodes: [] } });
+    }
+    if (kind === "team") {
+      const nodes = opts.team?.() ?? [];
+      return ok({ team: { issueCount: nodes.length + 20, nodes } });
+    }
+    if (kind === "others") return ok({ others0: { issueCount: 0, nodes: [] } });
+    // Preparing a requested pull request's diff ahead of time asks for its detail; not part of these tests.
+    return { code: 1, stdout: "", stderr: "HTTP 404: Not Found", killed: false };
   });
-  const service = await makeService({ config: () => config({ closedDays: 7 }), repos: { reset() {}, async cleanTrees() {}, resolve: async () => Promise.reject(new Error("no clone")) } });
+  return { calls, variables };
+}
+
+/** A list node as the list keeps it. */
+const summaryOf = (node: any) => mergeSearchResults({ viewer: { login: "me" }, x: { nodes: [node] } }, [{ alias: "x", reason: "review-requested", kind: "search", label: "x" }]).items[0];
+
+const merged = (n: number, over: Record<string, unknown> = {}) => mineNode(n, { state: "MERGED", mergedAt: "2026-10-06T00:00:00Z", closedAt: "2026-10-06T00:00:00Z", updatedAt: "2026-10-06T00:00:00Z", reviewRequests: { nodes: [] }, ...over });
+
+test("refresh: the list shows before recently closed pull requests load; they join it when they arrive, and changes are announced", async () => {
+  let open: any[] = [mineNode(1)];
+  let closed: any[] | Error = [merged(2)];
+  let release = () => {};
+  const gate = { closed: new Promise<void>((r) => (release = r)) };
+  const { calls } = fakeGitHub({ open: () => open, closed: () => closed, gate });
+  const service = await makeService({ config: () => config({ closedDays: 7 }), repos: NO_CLONE });
   const moved: string[] = [];
+  const groups = async () => (await service.pageGroups()).map((g) => [g.id, g.keys]);
   service.on("pullRequestChanged", (key: { number: number }) => moved.push(`#${key.number}`));
   try {
     await service.refresh();
-    assert.deepEqual(queries.sort(), ["closed", "main"], "two requests, sent together");
-    queries.length = 0;
-    assert.deepEqual((await service.pageGroups()).map((g) => [g.id, g.keys]), [["requested", ["acme/web#1"]], ["closed", ["acme/web#2"]]]);
+    assert.deepEqual(await groups(), [["requested", ["acme/web#1"]]], "the main search's list shows without waiting");
+    assert.deepEqual(calls.filter((c) => c !== "other"), ["main", "closed"], "recently closed ones are asked for after the main search");
+    let changes = 0;
+    service.on("change", () => changes++);
+    release();
+    await until(async () => (await groups()).length === 2, "the recently closed pull requests");
+    assert.ok(changes > 0, "their arrival repaints the list");
+    assert.deepEqual(await groups(), [["requested", ["acme/web#1"]], ["closed", ["acme/web#2"]]]);
     assert.deepEqual(service.totals.closed, { shown: 1, total: 5 });
     const items = await service.listItems();
     const one = items.find((i) => i.number === 1)!;
     assert.deepEqual(one.viewerLastReview, { state: "COMMENTED", at: "2026-10-04T00:00:00Z", commit: "h0" });
     assert.deepEqual(one.sinceReview, { newCommits: true, updated: true });
     assert.deepEqual(one.reviewCounts, { approvals: 1, changesRequested: 0 });
-    assert.deepEqual([one.requested, one.updatedAt, one.headRefOid, one.mergedAt], [true, "2026-10-05T00:00:00Z", "h1", null]);
     const two = items.find((i) => i.number === 2)!;
     assert.deepEqual([two.state, two.mergedAt, two.closedAt], ["MERGED", "2026-10-06T00:00:00Z", "2026-10-06T00:00:00Z"]);
-    assert.deepEqual(moved, []);
 
-    // A push to #1: announced once; #2 didn't change.
+    // Polls don't ask for recently closed ones again (every 10 minutes), but they keep their row; a push is announced.
+    calls.length = 0;
     open = [mineNode(1, { headRefOid: "h2", updatedAt: "2026-10-07T00:00:00Z" })];
     await service.refresh();
+    assert.deepEqual(calls.filter((c) => c !== "other"), ["main"]);
+    assert.deepEqual(await groups(), [["requested", ["acme/web#1"]], ["closed", ["acme/web#2"]]]);
     assert.deepEqual(moved, ["#1"]);
 
-    // #1 is merged: it leaves the open search and keeps its row from the closed one.
+    // #1 is merged: it leaves the main search, keeps its row, and recently closed ones are asked for at once, which
+    // moves it and announces it.
     open = [];
-    closed = [mineNode(1, { state: "MERGED", headRefOid: "h2", updatedAt: "2026-10-08T00:00:00Z", reviewRequests: { nodes: [] } }), ...(closed as any[])];
+    closed = [merged(1, { headRefOid: "h2", updatedAt: "2026-10-08T00:00:00Z" }), ...(closed as any[])];
+    calls.length = 0;
     await service.refresh();
-    assert.deepEqual(moved, ["#1", "#1"]);
-    assert.deepEqual((await service.pageGroups()).map((g) => [g.id, g.keys]), [["closed", ["acme/web#1", "acme/web#2"]]]);
+    assert.ok(service.get({ owner: "acme", name: "web", number: 1 }), "still listed while the recently-closed search runs");
+    await until(() => moved.length === 2, "the merge to be announced");
+    assert.deepEqual(calls.filter((c) => c !== "other"), ["main", "closed"]);
+    assert.deepEqual(await groups(), [["closed", ["acme/web#1", "acme/web#2"]]]);
 
-    // A failed closed search keeps the last ones found.
-    closed = new Error("down");
+    // A pull request that leaves the main search without merging (no longer requested) goes once that search says so.
+    open = [mineNode(3)];
     await service.refresh();
+    open = [];
+    await service.refresh();
+    await until(() => !service.get({ owner: "acme", name: "web", number: 3 }), "#3 to leave");
+
+    // A failed recently-closed search keeps the last ones found.
+    closed = new Error("down");
+    await service.refresh({ full: true });
+    await until(() => calls.filter((c) => c === "closed").length === 3, "the manual refresh's recently-closed search");
+    await new Promise((r) => setTimeout(r, 20));
     assert.equal(service.get({ owner: "acme", name: "web", number: 2 })?.summary?.state, "MERGED");
     assert.equal(service.lastError, null, "the main list still loaded");
+  } finally {
+    release();
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("refresh: recently closed every 10 minutes, team requests and others 5 seconds after the first list then every 5 minutes, everything on a manual refresh", async () => {
+  assert.deepEqual(REFRESH_TIMING, { closedEveryMs: 600_000, extrasDelayMs: 5_000, extrasEveryMs: 300_000 });
+  const { calls } = fakeGitHub({ open: () => [mineNode(1)], closed: () => [merged(2)], team: () => [mineNode(4, { reviewRequests: { nodes: [] } })] });
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  const service = await makeService({ config: () => config({ closedDays: 3, team: true, others: true }), repos: NO_CLONE, timing: { extrasDelayMs: 40 } });
+  const count = (kind: string) => calls.filter((c) => c === kind).length;
+  const counts = () => ({ main: count("main"), closed: count("closed"), team: count("team"), others: count("others") });
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+  try {
+    await service.refresh();
+    assert.deepEqual(counts(), { main: 1, closed: 1, team: 0, others: 0 }, "team requests and others wait");
+    await until(() => count("others") === 1, "team requests and others to load");
+    assert.deepEqual(counts(), { main: 1, closed: 1, team: 1, others: 1 });
+    assert.deepEqual((await service.pageGroups()).map((g) => g.id), ["requested", "team", "closed"]);
+
+    offset = 60_000; // the next poll: the main search only
+    await service.refresh();
+    await settle();
+    assert.deepEqual(counts(), { main: 2, closed: 1, team: 1, others: 1 });
+
+    offset = 5 * 60_000 + 1_000; // team requests and others are due again
+    await service.refresh();
+    await until(() => count("others") === 2, "the 5-minute background searches");
+    assert.deepEqual(counts(), { main: 3, closed: 1, team: 2, others: 2 });
+
+    offset = 10 * 60_000 + 500; // recently closed ones are due (team requests and others not yet: 4m59s since)
+    await service.refresh();
+    await until(() => count("closed") === 2, "the 10-minute recently-closed search");
+    await settle();
+    assert.deepEqual(counts(), { main: 4, closed: 2, team: 2, others: 2 });
+
+    offset += 1_000; // a manual refresh runs everything at once
+    await service.refresh({ full: true });
+    await until(() => count("others") === 3 && count("closed") === 3, "everything");
+    assert.deepEqual(counts(), { main: 5, closed: 3, team: 3, others: 3 });
+  } finally {
+    Date.now = realNow;
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("refresh: a manual refresh asked for while a poll is under way still runs the background searches", async () => {
+  const { calls } = fakeGitHub({ open: () => [mineNode(1)], closed: () => [], team: () => [] });
+  const service = await makeService({ config: () => config({ closedDays: 3, team: true }), repos: NO_CLONE, timing: { extrasDelayMs: 60_000 } });
+  try {
+    await service.refresh();
+    await until(() => calls.includes("closed"), "the first recently-closed search");
+    const poll = service.refresh();
+    const manual = service.refresh({ full: true });
+    await Promise.all([poll, manual]);
+    await until(() => calls.filter((c) => c === "team").length === 1 && calls.filter((c) => c === "closed").length === 2, "the manual refresh's background searches");
+    assert.equal(calls.filter((c) => c === "main").length, 2, "they shared one main search");
+  } finally {
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("refresh: rows and counts from the background searches stay while they load again, from the last session too", async () => {
+  const team = mineNode(4, { reviewRequests: { nodes: [] } });
+  // The last session's list: a requested one, a team request (1 of 21) and a merged one (1 of 5).
+  const memory = new Map<string, unknown>([
+    [
+      "lastList",
+      [
+        { ...summaryOf(mineNode(1)), reasons: ["review-requested"] },
+        { ...summaryOf(team), reasons: ["team-requested"] },
+        { ...summaryOf(merged(2)), reasons: ["recently-closed"] },
+      ],
+    ],
+    ["lastTotals", { direct: { shown: 1, total: 1 }, team: { shown: 1, total: 21 }, closed: { shown: 1, total: 5 } }],
+  ]);
+  let release = () => {};
+  const gate = { closed: new Promise<void>((r) => (release = r)), team: new Promise<void>(() => undefined) };
+  fakeGitHub({ open: () => [mineNode(1)], closed: () => [merged(2, { title: "Change 2, merged" })], team: () => [team], gate });
+  const service = await makeService({ memory, config: () => config({ closedDays: null, team: true }), repos: NO_CLONE, timing: { extrasDelayMs: 0 } });
+  const groups = async () => (await service.pageGroups()).map((g) => [g.id, g.description, g.keys]);
+  const expected = [
+    ["requested", "1", ["acme/web#1"]],
+    ["team", "1 of 21", ["acme/web#4"]],
+    ["closed", "1 of 5", ["acme/web#2"]],
+  ];
+  try {
+    assert.deepEqual(await groups(), expected, "the last session's list shows at once");
+    await service.refresh();
+    assert.deepEqual(await groups(), expected, "the main search alone doesn't drop the others' rows or counts");
+    release();
+    await until(() => !!(memory.get("lastTotals") as any)?.closed && service.totals.closed?.total === 5 && service.get({ owner: "acme", name: "web", number: 2 })?.summary?.title === "Change 2, merged", "recently closed ones");
+    assert.deepEqual(await groups(), expected);
+  } finally {
+    release();
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("diffline.watch.recentlyClosedDays: missing means 3 days, and the setting's default says so", async () => {
+  assert.equal(RECENTLY_CLOSED_DAYS, 3);
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const setting = pkg.contributes.configuration.properties?.["diffline.watch.recentlyClosedDays"] ?? pkg.contributes.configuration.flatMap?.((c: any) => c.properties["diffline.watch.recentlyClosedDays"] || []).at(0);
+  assert.equal(setting.default, 3);
+  const { calls, variables } = fakeGitHub({ open: () => [], closed: () => [] });
+  const service = await makeService({ config: () => config({ closedDays: null }), repos: NO_CLONE });
+  try {
+    await service.refresh();
+    await until(() => calls.includes("closed"), "the recently-closed search");
+    assert.match(variables.closedReviewed, new RegExp(` closed:>=${closedSince(3)} `));
   } finally {
     service.dispose();
     setGhRunner(null);
