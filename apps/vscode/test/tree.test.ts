@@ -64,7 +64,7 @@ test("tree: merged and closed rows, a never-reviewed row, and the Recently merge
   const tree = new PullRequestTree(service);
   const merged = tree.getTreeItem(row({ state: "MERGED", mergedAt: ago(30), viewerLastReview: { state: "COMMENTED", at: ago(72), commit: HEAD } }) as any);
   assert.equal(merged.description, "merged · you commented 3d ago · web");
-  assert.match(plain(merged.tooltip), /Merged 30 hours ago {2}\nNo approvals yet {2}\nYour review: commented 3 days ago at aaaaaaa {2}\n/);
+  assert.match(plain(merged.tooltip), /Merged 1 day ago {2}\nNo approvals yet {2}\nYour review: commented 3 days ago at aaaaaaa {2}\n/);
   const closed = tree.getTreeItem(row({ state: "CLOSED", closedAt: ago(80) }) as any);
   assert.equal(closed.description, "closed · web");
   assert.match(plain(closed.tooltip), /Closed 3 days ago without merging {2}\nNo approvals yet {2}\nYou haven't reviewed it yet\./);

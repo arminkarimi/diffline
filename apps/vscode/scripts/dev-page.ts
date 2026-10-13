@@ -3,7 +3,10 @@
 //   node scripts/dev-page.ts owner/name#123 --clone /path [--agent agent-file.json]
 // --sample builds it from test/fixtures/review-data.json instead, without GitHub. --metrics adds the review metrics
 // report: --metrics sample (made-up events), --metrics events.jsonl, --metrics empty or --metrics off; --start metrics
-// opens the page on it.
+// opens the page on it. With --sample, --state sets your review and the pull request's state: never, approved, changes,
+// commented, requested (re-requested after you approved), dismissed, merged, closed, rewritten (force-pushed, the
+// commit you reviewed still in the clone) or rewritten-gone (and gone from it); --notice merged|closed|reopened|commits|
+// updated sends the page a "changed on GitHub" message a second after it loads.
 
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -61,12 +64,56 @@ async function realReview() {
 async function sampleReview() {
   const data = JSON.parse(await readFile(path.join(root, "test", "fixtures", "review-data.json"), "utf8"));
   const k = prKeyString(key);
-  const pr = { title: "Add promo codes at checkout", author: { login: "alex-doe", name: "Alex Doe" }, body: "Adds promo codes to checkout.", createdAt: new Date(Date.now() - 2 * 864e5).toISOString(), state: "OPEN", checks: [], reviewRequests: [], latestReviews: [], reviews: [], comments: [] };
-  const item = { key: k, repo: `${key.owner}/${key.name}`, number: key.number, title: pr.title, author: pr.author, state: "OPEN", requested: true, additions: 120, deletions: 14, checks: { total: 0, failed: 0, running: 0 } };
+  const ago = (days: number) => new Date(Date.now() - days * 864e5).toISOString();
+  const viewer = { login: "sam-reviewer", name: "Sam Reviewer" };
+  const alex = { login: "alex-doe", name: "Alex Doe" };
+  const pr: Record<string, any> = { title: "Add promo codes at checkout", author: alex, body: "Adds promo codes to checkout.", createdAt: ago(4), updatedAt: ago(0.1), state: "OPEN", isDraft: false, headRefOid: data.head.sha, baseRefName: "main", checks: [], reviewRequests: [], latestReviews: [], reviews: [], comments: [], lastReview: null, mergedAt: null, mergedBy: null, closedAt: null };
+  const threads: any[] = [];
+  // --state: your review of it, and how it ended.
+  const state = opt("state") || "never";
+  const review = (st: string, commit: string | null, days = 2) => {
+    pr.lastReview = { submittedAt: ago(days), commit, state: st };
+    pr.reviews.push({ ...viewer, state: st, submittedAt: ago(days), body: "", commit });
+    if (st === "APPROVED" || st === "CHANGES_REQUESTED") pr.latestReviews.push({ ...viewer, state: st, submittedAt: ago(days) });
+  };
+  const since = data.since?.sha ?? null;
+  const gone = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c";
+  const noFresh = () => data.files.forEach((f: any) => f.hunks.forEach((h: any) => { h.fresh = false; h.lines.forEach((l: any[]) => { l[5] = 0; }); }));
+  if (state === "never") { data.since = null; noFresh(); pr.reviewRequests.push(viewer); }
+  if (["approved", "requested", "merged", "closed"].includes(state)) review("APPROVED", since);
+  if (state === "changes") review("CHANGES_REQUESTED", since);
+  if (state === "commented") review("COMMENTED", since, 0.3);
+  if (state === "dismissed") review("DISMISSED", since);
+  if (state === "requested") pr.reviewRequests.push(viewer);
+  if (state === "rewritten") { review("APPROVED", gone); data.since = { ...data.since, sha: gone, short: gone.slice(0, 7), index: -1 }; }
+  if (state === "rewritten-gone") { review("APPROVED", gone); data.since = null; noFresh(); }
+  if (state === "merged") Object.assign(pr, { state: "MERGED", mergedAt: ago(1), mergedBy: alex, closedAt: ago(1) });
+  if (state === "closed") Object.assign(pr, { state: "CLOSED", closedAt: ago(3) });
+  if (pr.lastReview) {
+    pr.comments.push({ ...alex, body: "Clamped the discount, as asked.", createdAt: ago(1), url: null });
+    threads.push({ id: "t1", resolved: false, outdated: false, path: data.files[4]?.path ?? data.files[0].path, line: null, startLine: null, side: "RIGHT", comments: [{ id: "c1", dbId: 1, ...alex, body: "Does this cover expired codes?", createdAt: ago(0.5), url: null }] });
+  }
+  const repo = `${key.owner}/${key.name}`;
+  const row = (n: number, extra: Record<string, unknown>) => ({ key: `${repo}#${n}`, repo, number: n, author: alex, state: "OPEN", isDraft: false, requested: false, additions: 40 + n, deletions: n, checks: { total: 3, failed: 0, running: 0 }, agent: { findings: 2, openHigh: 0, open: 1 }, viewerReview: null, viewerLastReview: null, sinceReview: null, reviewCounts: { approvals: 0, changesRequested: 0 }, mergedAt: null, closedAt: null, ...extra });
+  const current = row(key.number, { title: pr.title, state: pr.state, requested: pr.reviewRequests.length > 0, agent: null, mergedAt: pr.mergedAt, closedAt: pr.closedAt, viewerReview: pr.latestReviews[0]?.state ?? null, viewerLastReview: pr.lastReview ? { state: pr.lastReview.state, at: pr.lastReview.submittedAt, commit: pr.lastReview.commit } : null, sinceReview: pr.lastReview ? { newCommits: true, updated: true } : null, reviewCounts: { approvals: pr.latestReviews.filter((r: any) => r.state === "APPROVED").length, changesRequested: 0 } });
+  const list = [
+    current,
+    row(31, { title: "Fix rounding in invoice totals", isDraft: true, requested: true, viewerReview: "APPROVED", viewerLastReview: { state: "COMMENTED", at: ago(0.2), commit: "a".repeat(40) }, sinceReview: { newCommits: false, updated: true }, reviewCounts: { approvals: 1, changesRequested: 0 } }),
+    row(28, { title: "Refactor session storage", viewerReview: "APPROVED", viewerLastReview: { state: "APPROVED", at: ago(2), commit: "b".repeat(40) }, sinceReview: { newCommits: true, updated: true }, reviewCounts: { approvals: 2, changesRequested: 0 } }),
+    row(26, { title: "Add retries to webhook delivery", mergeStateStatus: "DIRTY", viewerReview: "CHANGES_REQUESTED", viewerLastReview: { state: "CHANGES_REQUESTED", at: ago(1), commit: "c".repeat(40) }, sinceReview: { newCommits: false, updated: false }, reviewCounts: { approvals: 0, changesRequested: 1 } }),
+    row(24, { title: "Bump the test runner", state: "MERGED", mergedAt: ago(1), closedAt: ago(1), viewerReview: "APPROVED", viewerLastReview: { state: "APPROVED", at: ago(2), commit: "d".repeat(40) }, reviewCounts: { approvals: 1, changesRequested: 0 } }),
+    row(22, { title: "Drop the legacy CSV export", state: "CLOSED", closedAt: ago(3), viewerLastReview: { state: "COMMENTED", at: ago(4), commit: "e".repeat(40) }, reviewCounts: { approvals: 0, changesRequested: 0 } }),
+  ];
   const live = {
-    repo: `${key.owner}/${key.name}`, number: key.number, url: `https://github.com/${key.owner}/${key.name}/pull/${key.number}`, github: true, githubError: null,
-    viewer: { login: "sam-reviewer", name: "Sam Reviewer" }, pr, threads: [], loadedAt: new Date().toISOString(), token: "", api: "", agent: null, state: null,
-    list: [item], groups: [{ id: "requested", label: "Review requested", description: "", collapsed: false, keys: [k] }], grouping: { by: "relationship", sort: "risk" },
+    repo, number: key.number, url: `https://github.com/${repo}/pull/${key.number}`, github: true, githubError: null,
+    viewer, pr, threads, loadedAt: new Date().toISOString(), token: "", api: "", agent: null, state: null,
+    list,
+    groups: [
+      { id: "requested", label: "Review requested", description: "", collapsed: false, keys: [k, `${repo}#31`] },
+      { id: "reviewed", label: "You reviewed", description: "", collapsed: false, keys: [`${repo}#28`, `${repo}#26`] },
+      { id: "closed", label: "Recently merged or closed", description: "", collapsed: false, keys: [`${repo}#24`, `${repo}#22`] },
+    ],
+    grouping: { by: "relationship", sort: "risk" },
     ...(args.includes("--home") ? { startView: "inbox" } : {}),
   };
   return { data, live };
@@ -139,7 +186,17 @@ window.acquireVsCodeApi = () => ({ postMessage(m) {
   if (m.type === "metricsReport") setTimeout(() => window.postMessage(METRICS ? { type: "api-result", id: m.id, ok: true, data: METRICS[(m.days ?? "all") + "|" + m.groupBy] } : { type: "api-result", id: m.id, ok: false, error: "Run dev-page with --metrics." }, "*"), 120);
   if (m.type === "metricsExport") setTimeout(() => window.postMessage({ type: "api-result", id: m.id, ok: true, data: { saved: "/tmp/diffline-export." + m.format, events: 0 } }, "*"), 10);
 } });
-const METRICS = ${scriptJson(await metricsReports())};`;
+const METRICS = ${scriptJson(await metricsReports())};${noticeScript()}`;
+
+/** --notice: a "changed on GitHub" message, as ReviewPanel.noticeChange sends it, a second after the page loads. */
+function noticeScript() {
+  const kind = opt("notice");
+  if (!kind) return "";
+  const pr = (live as any).pr || {};
+  const state = kind === "merged" ? "MERGED" : kind === "closed" ? "CLOSED" : kind === "reopened" ? "OPEN" : pr.state;
+  const change = { kind, state, head: kind === "commits" ? "f".repeat(40) : pr.headRefOid, updatedAt: new Date().toISOString(), stateChanged: state !== pr.state || kind === "reopened", newCommits: kind === "commits", updated: true, was: { state: pr.state, head: pr.headRefOid, updatedAt: pr.updatedAt } };
+  return `\nsetTimeout(() => window.postMessage(${scriptJson({ type: "host-pr-changed", key: prKeyString(key), change })}, "*"), 1000);`;
+}
 
 /** Every report the page's pickers can ask for, worked out ahead, since this page has no extension to ask. */
 async function metricsReports() {

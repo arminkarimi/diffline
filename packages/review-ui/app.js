@@ -99,6 +99,30 @@ function ago(iso) {
   return F_DATE.format(then);
 }
 
+// "5 minutes ago", "3 hours ago", "2 days ago": as the sidebar's hover says it (time.ts timeAgo in the extension).
+function timeAgo(iso) {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return "earlier";
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${plural(mins, "minute")} ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${plural(hours, "hour")} ago`;
+  return `${plural(Math.round(hours / 24), "day")} ago`;
+}
+
+// "just now", "5m ago", "5h ago", "2d ago": short, for list rows, as the sidebar's rows say it (row-text.ts shortAgo).
+function shortAgo(iso) {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return "";
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 /* ---------- People, the pull request and its threads, from GitHub ---------- */
 
 const livePid = (login) => (LIVE.viewer && login && login === LIVE.viewer.login ? "you" : login || "ghost");
@@ -382,7 +406,26 @@ function rebuildChapters() {
 }
 const PACE = 24; // changed lines a reviewer reads per minute
 const sinceIdx = D.since ? D.since.index : null;
-const newCommits = sinceIdx == null ? [] : commits.slice(sinceIdx + 1);
+
+/* ---------- Your review, and what changed since ---------- */
+
+const PRL = LIVE.pr || {};
+const isViewer = (login) => !!(LIVE.viewer && LIVE.viewer.login && login && login.toLowerCase() === LIVE.viewer.login.toLowerCase());
+// Your newest submitted review of any state (a reply to a thread is a comment review); null when you haven't reviewed it.
+// Pages saved before the state was sent have none, and read as "reviewed".
+const MY_REVIEW = PRL.lastReview && PRL.lastReview.submittedAt ? { state: PRL.lastReview.state || null, at: PRL.lastReview.submittedAt, commit: PRL.lastReview.commit || null } : null;
+// Your standing approval or change request on GitHub, which a later comment doesn't replace.
+const MY_OPINION = ((PRL.latestReviews || []).find((r) => isViewer(r.login)) || {}).state || null;
+const REQUESTED = (PRL.reviewRequests || []).some((r) => isViewer(r.login));
+// The commit you reviewed isn't among the pull request's commits any more: a force-push or rebase rewrote the branch, so
+// there's no count of new commits. The extension then diffs the head against the commit you reviewed while the clone
+// still has it (D.since), which marks the lines that differ from what you reviewed.
+const REWRITTEN = !!(MY_REVIEW && MY_REVIEW.commit && D.head && MY_REVIEW.commit !== D.head.sha && !commits.some((c) => c.sha === MY_REVIEW.commit));
+const newCommits = sinceIdx == null || sinceIdx < 0 || REWRITTEN ? [] : commits.slice(sinceIdx + 1);
+// With nothing to compare with (you never reviewed it, or the commit you reviewed is gone from the clone), every hunk you
+// haven't marked reviewed is new to you.
+const ALL_NEW = !MY_REVIEW || (REWRITTEN && !D.since);
+const isNew = (h) => ALL_NEW || !!h.fresh;
 
 function anchorFor(path, match) {
   const f = byPath.get(path);
@@ -493,7 +536,10 @@ const S = {
   filter: "all",
   fold: prefs.fold !== false,
   split: !!prefs.split,
-  banner: prefs.banner !== false,
+  // The "Welcome back" banner, closed for this head: it comes back when new commits are pushed.
+  bannerHead: typeof prefs.bannerHead === "string" ? prefs.bannerHead : null,
+  notice: null,           // the latest change on GitHub since the page was built (host-pr-changed)
+  noticeHidden: false,    // its bar was dismissed (the change still counts, e.g. for posting on a merged one)
   reviewed: new Set((store.read("reviewedIds", null) || defaultReviewed().map((k) => HUNK.get(k).h.id)).map((id) => HUNK_ID.get(id)).filter(Boolean)),
   drafts: (store.read("drafts", []) || []).map(placeDraft).filter((d) => d.replyTo || d.detached || (d.f != null && files[d.f])),
   threadActions: store.read("threadActions", {}) || {},
@@ -545,7 +591,7 @@ function save() {
   store.write("pushSummary", S.pushSummary);
   store.write("plan", S.plan);
   store.write("planState", S.planState);
-  store.write("prefs", { fold: S.fold, split: S.split, banner: S.banner, brief: S.brief, grouping: S.grouping });
+  store.write("prefs", { fold: S.fold, split: S.split, bannerHead: S.bannerHead, brief: S.brief, grouping: S.grouping });
 }
 
 /* ---------- Time spent on the review ---------- */
@@ -606,7 +652,7 @@ function hunkTalk(f, h) {
 }
 
 function hunkVisible(f, h) {
-  if (S.filter === "new") return h.fresh && !S.reviewed.has(h.key);
+  if (S.filter === "new") return isNew(h) && !S.reviewed.has(h.key);
   if (S.filter === "todo") return !S.reviewed.has(h.key);
   if (S.filter === "flag") return hunkFlagged(h);
   if (S.filter === "talk") return hunkTalk(f, h);
@@ -642,7 +688,7 @@ function counts() {
     all++;
     const done = S.reviewed.has(h.key);
     if (done) reviewed++;
-    if (h.fresh && !done) fresh++;
+    if (isNew(h) && !done) fresh++;
     if (hunkTalk(f, h)) talk++;
     if (hunkFlagged(h)) flag++;
   }
@@ -1001,7 +1047,8 @@ function liveStages() {
   const gates = [];
   const latest = new Map((p.latestReviews || []).filter((r) => r.login).map((r) => [r.login, r]));
   (p.reviewRequests || []).forEach((r) => {
-    if (r.login && latest.has(r.login)) return;
+    // You have a gate of your own below, requested or not.
+    if (r.login && (latest.has(r.login) || isViewer(r.login))) return;
     gates.push({ id: `rq-${r.login || r.team}`, who: r.login ? livePid(r.login) : null, name: r.login ? nameOf(livePid(r.login)) : `@${r.team}`, role: "Review requested", st: "waiting", detail: "Hasn't reviewed yet" });
   });
   latest.forEach((r) => {
@@ -1011,17 +1058,17 @@ function liveStages() {
       role: { APPROVED: "Approved", CHANGES_REQUESTED: "Requested changes", COMMENTED: "Commented", DISMISSED: "Review dismissed" }[r.state] || "Reviewed",
       detail: r.submittedAt ? ago(r.submittedAt) : "" });
   });
-  const mineLatest = LIVE.viewer ? latest.get(LIVE.viewer.login) : null;
-  gates.push({ id: "you", who: "you", name: "You", role: mineLatest ? `Your last review: ${(mineLatest.state || "").toLowerCase().replace("_", " ")}` : "Your review", st: "waiting", mine: true,
-    detail: S.drafts.length ? `${plural(S.drafts.length, "draft")} saved on this machine` : "No drafts yet",
-    action: { act: "finish", label: "Finish review" } });
+  gates.push(youGate());
   const hi = highOpen();
   if (FIND.length) gates.push({ id: "findings", agent: true, name: "Agent findings", role: "A person decides on each high finding", st: hi.length ? "waiting" : "passed", mine: hi.length > 0,
     detail: hi.length ? (hi.length === 1 ? "1 high finding needs your decision" : `${hi.length} high findings need your decision`) : "Every high finding has a decision",
     action: hi.length ? { act: "go-finding", id: hi[0].id, label: "Decide" } : null });
-  const decision = p.reviewDecision;
-  out.push({ id: "review", name: "Review", gates, st: decision === "APPROVED" ? "done" : decision === "CHANGES_REQUESTED" ? "blocked" : "active",
-    caption: decision === "APPROVED" ? "Approved" : decision === "CHANGES_REQUESTED" ? "Changes requested" : decision === "REVIEW_REQUIRED" ? "Review required" : LIVE.github ? "In review" : "Unknown" });
+  const verdict = reviewVerdict();
+  // Merged or closed, the review is over: done or closed, whatever GitHub last said about it.
+  out.push({ id: "review", name: "Review", gates,
+    st: p.state === "MERGED" ? "done" : p.state === "CLOSED" ? "closed" : verdict === "APPROVED" ? "done" : verdict === "CHANGES_REQUESTED" ? "blocked" : "active",
+    caption: p.state === "MERGED" ? (verdict === "APPROVED" ? "Approved" : "Merged") : p.state === "CLOSED" ? "Closed"
+      : verdict === "APPROVED" ? "Approved" : verdict === "CHANGES_REQUESTED" ? "Changes requested" : p.reviewDecision === "REVIEW_REQUIRED" ? "Review required" : LIVE.github ? "In review" : "Unknown" });
 
   const merge = p.state === "MERGED" ? ["done", "passed", "Merged"] : p.state === "CLOSED" ? ["blocked", "blocked", "Closed without merging"] : p.isDraft ? ["upcoming", "upcoming", "Still a draft"]
     : ({ CLEAN: ["active", "waiting", "Ready to merge"], BLOCKED: ["upcoming", "upcoming", "Waiting on required reviews or checks"], BEHIND: ["upcoming", "upcoming", "Behind the base branch"],
@@ -1034,19 +1081,110 @@ function liveStages() {
 
 const stages = () => liveStages();
 
+// Approvals and change requests among each reviewer's latest approval or change request (dismissed ones don't count),
+// as the extension counts them for the list (review-status.ts reviewCounts).
+const countReviews = (latest) => ({
+  approvals: (latest || []).filter((r) => r.state === "APPROVED").length,
+  changesRequested: (latest || []).filter((r) => r.state === "CHANGES_REQUESTED").length,
+});
+
+// GitHub's review decision, or without one (a repository that doesn't require reviews) what the reviews add up to.
+function reviewVerdict() {
+  const p = LIVE.pr || {};
+  if (p.reviewDecision) return p.reviewDecision;
+  const c = countReviews(p.latestReviews);
+  return c.changesRequested ? "CHANGES_REQUESTED" : c.approvals ? "APPROVED" : null;
+}
+
+const MY_DID = { APPROVED: "approved", CHANGES_REQUESTED: "requested changes", COMMENTED: "commented" };
+
+// What you did last: "approved", "commented", or "approved, then commented" when a comment (a reply to a thread is one)
+// came after your approval or change request, which still stands on GitHub. The sidebar says it the same way.
+function myDid() {
+  if (!MY_REVIEW) return "";
+  const before = MY_DID[MY_OPINION === "APPROVED" || MY_OPINION === "CHANGES_REQUESTED" ? MY_OPINION : ""];
+  if (MY_REVIEW.state === "COMMENTED" && before) return `${before}, then commented`;
+  return MY_DID[MY_REVIEW.state] || "reviewed";
+}
+
+// Comments by others after your review: on the conversation and in review threads.
+function newCommentsSince(at) {
+  const t = Date.parse(at || "");
+  if (!Number.isFinite(t)) return 0;
+  const after = (c) => !!c.createdAt && Date.parse(c.createdAt) > t && !isViewer(c.login);
+  return ((LIVE.pr || {}).comments || []).filter(after).length + (LIVE.threads || []).reduce((n, th) => n + (th.comments || []).filter(after).length, 0);
+}
+
+// "3 new commits and 2 new comments since", "the branch was rewritten since", "nothing new since".
+function sinceWords() {
+  const n = newCommentsSince(MY_REVIEW && MY_REVIEW.at);
+  if (REWRITTEN) return `the branch was rewritten since${n ? ` · ${plural(n, "new comment")}` : ""}`;
+  const parts = [newCommits.length ? plural(newCommits.length, "new commit") : "", n ? plural(n, "new comment") : ""].filter(Boolean);
+  return parts.length ? `${joinNames(parts)} since` : "nothing new since";
+}
+
+const mergedByWho = (p) => (!p.mergedBy ? "" : isViewer(p.mergedBy.login) ? "you" : p.mergedBy.name || p.mergedBy.login || "");
+// "Merged by Alex Doe 1 day ago", "Closed 3 days ago without merging".
+function endedLine(p) {
+  if (p.state === "MERGED") return `Merged${mergedByWho(p) ? ` by ${mergedByWho(p)}` : ""}${p.mergedAt ? ` ${timeAgo(p.mergedAt)}` : ""}`;
+  return `Closed${p.closedAt ? ` ${timeAgo(p.closedAt)}` : ""} without merging`;
+}
+
+/**
+ * The line under the title: your review and what's new since, or the pull request's end. "You approved this 2 days ago
+ * at abc1234 · 3 new commits and 2 new comments since", "You haven't reviewed this yet", "Merged by Alex 1 day ago".
+ * Nothing on your own pull request. Returns { tone, icon, html }.
+ */
+function statusLine() {
+  const p = LIVE.pr || {};
+  if (p.state === "MERGED") return { tone: "merged", icon: "merge", html: esc(endedLine(p)) };
+  if (p.state === "CLOSED") return { tone: "closed", icon: "x-circle", html: esc(endedLine(p)) };
+  if (ownPR() || !LIVE.viewer) return null;
+  if (!MY_REVIEW) return { tone: "todo", icon: "eye", html: REQUESTED ? "Your review is requested · you haven't reviewed this yet" : "You haven't reviewed this yet" };
+  const at = `${timeAgo(MY_REVIEW.at)}${MY_REVIEW.commit ? ` at <code>${esc(MY_REVIEW.commit.slice(0, 7))}</code>` : ""}`;
+  const did = myDid();
+  const lead = MY_REVIEW.state === "DISMISSED" ? `your review from ${at} was dismissed` : `you ${did}${did === "approved" ? " this" : ""} ${at}`;
+  const tone = MY_REVIEW.state === "DISMISSED" ? "todo" : MY_OPINION === "APPROVED" ? "ok" : MY_OPINION === "CHANGES_REQUESTED" ? "bad" : "info";
+  const ic = tone === "ok" ? "check-circle" : tone === "bad" ? "x-circle" : tone === "info" ? "message" : "eye";
+  return { tone, icon: ic, html: cap(`${REQUESTED ? "your review is requested again · " : ""}${lead} · ${sinceWords()}`) };
+}
+
+function statusLineHTML() {
+  const st = statusLine();
+  return st ? `<p class="pr-status ps-${st.tone}" id="pr-status">${icon(st.icon)}<span>${st.html}</span></p>` : "";
+}
+
+// Your gate on the Review stage: done when you approved, blocked when you requested changes, a note when you commented.
+function youGate() {
+  const drafts = S.drafts.length ? `${plural(S.drafts.length, "draft")} saved on this machine` : "No drafts yet";
+  const gate = { id: "you", who: "you", name: "You", mine: true, action: { act: "finish", label: "Finish review" } };
+  if (ownPR()) return { ...gate, role: "Your pull request", st: "upcoming", detail: drafts };
+  if (!MY_REVIEW) return { ...gate, role: REQUESTED ? "Review requested" : "Your review", st: "waiting", detail: drafts };
+  const when = `${timeAgo(MY_REVIEW.at)}${MY_REVIEW.commit ? ` at ${MY_REVIEW.commit.slice(0, 7)}` : ""}`;
+  const again = REQUESTED && (LIVE.pr || {}).state === "OPEN" ? " · requested again" : "";
+  const st = MY_REVIEW.state === "DISMISSED" ? "waiting" : MY_OPINION === "APPROVED" ? "passed" : MY_OPINION === "CHANGES_REQUESTED" ? "blocked" : "info";
+  const role = MY_REVIEW.state === "DISMISSED" ? "Your review was dismissed" : `You ${myDid()}`;
+  return { ...gate, role: role + again, st, detail: `${when} · ${drafts}` };
+}
+
 function prState() {
   const p = LIVE.pr || {};
   if (p.state === "MERGED") return { label: "Merged", cls: "s-ok" };
   if (p.state === "CLOSED") return { label: "Closed", cls: "s-bad" };
   if (p.isDraft) return { label: "Draft", cls: "s-blue" };
-  if (p.reviewDecision === "CHANGES_REQUESTED") return { label: "Changes requested", cls: "s-bad" };
-  if (p.reviewDecision === "APPROVED") return { label: "Approved", cls: "s-ok" };
+  const verdict = reviewVerdict();
+  if (verdict === "CHANGES_REQUESTED") return { label: "Changes requested", cls: "s-bad" };
+  if (verdict === "APPROVED") return { label: "Approved", cls: "s-ok" };
   return { label: "In review", cls: "s-blue" };
 }
 
+// The stage that's next, "Review: Changes requested", or how it ended: "Merged", "Closed".
 function flowSummary() {
+  const p = LIVE.pr || {};
+  if (p.state === "MERGED") return "Merged";
+  if (p.state === "CLOSED") return "Closed";
   const cur = stages().find((s) => s.st !== "done");
-  return cur ? `${cur.name}: ${cur.caption}` : "Shipped: live in production";
+  return cur ? `${cur.name}: ${cur.caption}` : "Merged";
 }
 
 /* ---------- Syntax highlighting ---------- */
@@ -1599,7 +1737,7 @@ function topbarHTML() {
 
 function stageNode(s) {
   if (s.st === "done") return icon("check");
-  if (s.st === "blocked") return icon("x");
+  if (s.st === "blocked" || s.st === "closed") return icon("x");
   if (s.st === "running") return `<span class="spin" aria-hidden="true"></span>`;
   return icon(STAGE_ICONS[s.id]);
 }
@@ -1614,6 +1752,14 @@ function trackHTML(ss) {
 
 const tabBtn = (id, label, count) => `<button type="button" class="tab" role="tab" data-act="tab" data-tab="${id}" aria-selected="${S.tab === id}">${label}${count == null ? "" : `<span class="tab-count">${count}</span>`}</button>`;
 
+// Under the track on narrow screens: the stage that's next, or how the pull request ended.
+function trackSumHTML(cur) {
+  const p = LIVE.pr || {};
+  if (p.state === "MERGED") return `<b>Merged</b><span>${esc([mergedByWho(p) ? `by ${mergedByWho(p)}` : "", p.mergedAt ? timeAgo(p.mergedAt) : ""].filter(Boolean).join(" "))}</span>`;
+  if (p.state === "CLOSED") return `<b>Closed</b><span>${p.closedAt ? `${timeAgo(p.closedAt)}, ` : ""}without merging</span>`;
+  return cur ? `<b>${cur.name}</b><span>${esc(cur.caption)}</span>` : "<b>Merged</b>";
+}
+
 function prHeadHTML() {
   const ss = stages();
   const st = prState();
@@ -1623,11 +1769,13 @@ function prHeadHTML() {
   return `<section class="pr-head" id="pr-head">
     <div class="pr-eyebrow"><span class="state ${st.cls}">${st.label}</span>${riskPillHTML(currentRisk())}<span class="mono dim">${esc(PR.repo)} #${PR.number}</span></div>
     <h1 class="pr-title">${esc(PR.title)}</h1>
-    <p class="pr-meta">${avatar(PR.author, "sm")}<span><b>${esc(PEOPLE[PR.author].name)}</b> wants to merge
-      <code class="ref">${esc(D.head.ref)}</code> into <code class="ref">${esc(D.base.ref)}</code></span>
+    ${statusLineHTML()}
+    <p class="pr-meta">${avatar(PR.author, "sm")}<span>${(LIVE.pr || {}).state === "MERGED"
+        ? `${ownPR() ? "Your" : `<b>${esc(PEOPLE[PR.author].name)}</b>'s`} <code class="ref">${esc(D.head.ref)}</code> was merged into <code class="ref">${esc(D.base.ref)}</code>`
+        : `<b>${esc(PEOPLE[PR.author].name)}</b> ${(LIVE.pr || {}).state === "CLOSED" ? "wanted to merge" : "wants to merge"} <code class="ref">${esc(D.head.ref)}</code> into <code class="ref">${esc(D.base.ref)}</code>`}</span>
       <span>${plural(commits.length, "commit")} · ${plural(files.length, "file")} · <span class="n-add">+${num(add)}</span> <span class="n-del">−${num(del)}</span> · about ${readTime(totalMinutes())} to review</span></p>
     ${trackHTML(ss)}
-    <p class="track-sum">${cur ? `<b>${cur.name}</b><span>${esc(cur.caption)}</span>` : `<b>Shipped</b><span>Live in production</span>`}</p>
+    <p class="track-sum">${trackSumHTML(cur)}</p>
     <nav class="tabs" role="tablist" aria-label="Pull request">
       ${tabBtn("changes", "Changes", files.length)}${tabBtn("map", "Map", null)}${tabBtn("discussion", "Discussion", openThreadCount())}${tabBtn("workflow", "Workflow", `${ss.filter((s) => s.st === "done").length}/${ss.length}`)}
     </nav>
@@ -1658,18 +1806,29 @@ function toolbarHTML() {
 }
 
 function welcomeHTML() {
-  if (!S.banner || !newCommits.length || !PR.lastReview || !PR.lastReview.at) return "";
+  if (!MY_REVIEW || (D.head && S.bannerHead === D.head.sha) || (!newCommits.length && !REWRITTEN)) return "";
   const freshHunks = files.flatMap((f) => f.hunks).filter((h) => h.fresh).length;
   const freshFiles = files.filter((f) => f.hunks.some((h) => h.fresh)).length;
+  const when = F_DAY.format(new Date(MY_REVIEW.at));
+  const head = REWRITTEN
+    ? `Welcome back. The branch was rewritten since your review on ${when}.`
+    : `Welcome back. ${esc(authorShort(true))} pushed ${plural(newCommits.length, "commit")} since your review on ${when}.`;
+  // After a force-push or rebase there's no count of commits: the lines that differ from the commit you reviewed are
+  // marked when the clone still has it, and otherwise everything you haven't marked reviewed counts as new.
+  const text = !REWRITTEN
+    ? `${plural(freshHunks, "hunk")} in ${plural(freshFiles, "file")} changed. What you already reviewed stays folded, and every line that's new to you has a blue mark in the margin.`
+    : D.since
+      ? `A force-push or rebase replaced <code>${esc(MY_REVIEW.commit.slice(0, 7))}</code>, the commit you reviewed, so there's no count of new commits. ${freshHunks ? `Lines that differ from it have a blue mark in the margin: ${plural(freshHunks, "hunk")} in ${plural(freshFiles, "file")}.` : "None of the changed lines differ from it."}`
+      : `A force-push or rebase replaced <code>${esc(MY_REVIEW.commit.slice(0, 7))}</code>, the commit you reviewed, and it isn't in the local clone, so every hunk you haven't marked reviewed counts as new.`;
   return `<section class="welcome" id="welcome" aria-label="Changes since your last review">
     <div class="welcome-mark">${icon("pencil")}</div>
     <div>
-      <h2>Welcome back. ${esc(authorShort(true))} pushed ${plural(newCommits.length, "commit")} since your review on ${F_DAY.format(new Date(PR.lastReview.at))}.</h2>
-      <p>${plural(freshHunks, "hunk")} in ${plural(freshFiles, "file")} changed. What you already reviewed stays folded, and every line that's new to you has a blue mark in the margin.</p>
-      <ul class="welcome-commits">${newCommits.map((c) => `<li><code>${esc(c.short)}</code><span>${esc(c.subject)}</span><time>${ago(c.date)}</time></li>`).join("")}</ul>
+      <h2>${head}</h2>
+      <p>${text}</p>
+      ${newCommits.length ? `<ul class="welcome-commits">${newCommits.map((c) => `<li><code>${esc(c.short)}</code><span>${esc(c.subject)}</span><time>${ago(c.date)}</time></li>`).join("")}</ul>` : ""}
     </div>
     <div class="welcome-actions">
-      <button type="button" class="btn primary sm" data-act="filter" data-filter="new">Show only what's new</button>
+      ${counts().fresh ? `<button type="button" class="btn primary sm" data-act="filter" data-filter="new">Show only what's new</button>` : ""}
       <button type="button" class="icon-btn sm" data-act="banner-close" aria-label="Dismiss">${icon("x")}</button>
     </div>
   </section>`;
@@ -1975,9 +2134,17 @@ function chapterHTML(c, fs) {
   </section>`;
 }
 
+// "New to you" with nothing in it: never reviewed (so everything counted as new), the branch rewritten, or caught up.
+function newEmptyCopy() {
+  if (!MY_REVIEW) return ["Nothing new to you", "You haven't reviewed this pull request yet, so every hunk counts as new until you mark it reviewed. You've marked them all."];
+  if (ALL_NEW) return ["Nothing new to you", "The branch was rewritten since your review, so every hunk counts as new until you mark it reviewed. You've marked them all."];
+  if (!files.some((f) => f.hunks.some((h) => h.fresh))) return ["You're caught up", REWRITTEN ? "The branch was rewritten since your review, but none of the changed lines differ from what you reviewed." : "Nothing in the code changed since your last review."];
+  return ["You're caught up", "Everything that changed since your last review is marked reviewed."];
+}
+
 function emptyHTML() {
   const copy = {
-    new: ["You're caught up", "Everything that changed since your last review is marked reviewed.", `<button type="button" class="btn sm" data-act="filter" data-filter="all">Show all changes</button>`],
+    new: [...newEmptyCopy(), `<button type="button" class="btn sm" data-act="filter" data-filter="all">Show all changes</button>`],
     todo: ["Everything is reviewed", "Every hunk has your mark. Time to decide.", finishBtnHTML("end")],
     flag: ["Nothing flagged", "The agents didn't flag anything in this pull request.", `<button type="button" class="btn sm" data-act="filter" data-filter="all">Show all changes</button>`],
     talk: ["No comments yet", "Click a line number to start a comment.", `<button type="button" class="btn sm" data-act="filter" data-filter="all">Show all changes</button>`],
@@ -2454,13 +2621,21 @@ function refreshPushFoot() {
   if (el) el.innerHTML = pushFootHTML();
 }
 
+// The pull request's state: what the page was built with, or what GitHub said since (a host-pr-changed notice).
+const prStateNow = () => (S.notice && S.notice.stateChanged && S.notice.state) || (LIVE.pr || {}).state || null;
+
 function pushFootHTML() {
   if (!LIVE.github) return `<span class="push-note">Run <code>gh auth login</code> in a terminal, then refresh, to post.</span><button type="button" class="btn ghost" data-act="sheet-close">Close</button>`;
   if (S.pushConfirm) {
     const who = LIVE.viewer ? `@${esc(LIVE.viewer.login)}` : "you";
-    return `<span class="push-note"><b>Post as ${who} to ${esc(PR.repo)} #${PR.number}?</b> Everyone who can see the pull request will see it.</span>
+    // On a merged or closed pull request (as the page shows it, or as GitHub said since), confirm that first.
+    const ended = { MERGED: "merged", CLOSED: "closed" }[prStateNow()];
+    const note = ended
+      ? `<b>${esc(PR.repo)}#${PR.number} is already ${ended}. Post your review anyway?</b> GitHub still records it. It posts as ${who}.`
+      : `<b>Post as ${who} to ${esc(PR.repo)} #${PR.number}?</b> Everyone who can see the pull request will see it.`;
+    return `<span class="push-note">${note}</span>
       <button type="button" class="btn ghost" data-act="push-back"${S.pushBusy ? " disabled" : ""}>Back</button>
-      <button type="button" class="btn primary" data-act="push-now"${S.pushBusy ? " disabled" : ""}>${S.pushBusy ? `<span class="spin" aria-hidden="true"></span>Posting` : "Post now"}</button>`;
+      <button type="button" class="btn primary" data-act="push-now"${S.pushBusy ? " disabled" : ""}>${S.pushBusy ? `<span class="spin" aria-hidden="true"></span>Posting` : ended ? "Post anyway" : "Post now"}</button>`;
   }
   return `<button type="button" class="btn ghost push" data-act="push-preview">Preview what's sent</button>
     <button type="button" class="btn ghost" data-act="sheet-close">Cancel</button>
@@ -2583,6 +2758,8 @@ function finishSheetHTML() {
   return `${sheetHead("finish", "Post your review to GitHub")}
   <div class="sheet-body">
     <ul class="fr-list">
+      ${prStateNow() === "MERGED" || prStateNow() === "CLOSED" ? `<li>${icon(prStateNow() === "MERGED" ? "merge" : "x-circle")}<div class="fr-text"><b>${esc((LIVE.pr || {}).state === prStateNow() ? endedLine(LIVE.pr) : `This pull request was ${prStateNow() === "MERGED" ? "merged" : "closed"}`)}</b>
+        <span>A review posted now is still recorded on GitHub.</span></div></li>` : ""}
       <li>${ring(progress(), 30)}<div class="fr-text"><b>${c.reviewed} of ${plural(c.all, "hunk")} reviewed</b>
         <span>${c.todo ? `${c.todo} left, about ${readTime(remainingMinutes())}` : "You've seen every change"}</span></div>
         ${c.todo ? `<button type="button" class="btn sm" data-act="next-unreviewed">Keep reviewing</button>` : ""}</li>
@@ -2756,6 +2933,12 @@ function planSheetHTML() {
 /* ---------- Workflow tab ---------- */
 
 function flowNext() {
+  const p = LIVE.pr || {};
+  // A merged or closed pull request has no next step; a review posted now is still recorded on GitHub.
+  if (p.state === "MERGED" || p.state === "CLOSED") {
+    return { icon: p.state === "MERGED" ? "merge" : "x-circle", tone: p.state === "MERGED" ? "ok" : "", title: endedLine(p),
+      text: "You can still read it and post a review. GitHub records it on the pull request.", action: S.drafts.length ? { act: "finish", label: "Finish review" } : null };
+  }
   const hi = highOpen();
   if (hi.length) return { icon: "bot", tone: "you", primary: true, title: "Start with the agent's high finding", text: `${hi[0].title.replace(/`/g, "")} (${files[hi[0].f].base})`, action: { act: "go-finding", id: hi[0].id, label: "Show the finding" } };
   const cur = stages().find((st) => st.st !== "done");
@@ -2767,6 +2950,7 @@ function flowNext() {
 
 function gateIcon(g) {
   if (g.st === "passed") return icon("check-circle");
+  if (g.st === "info") return icon("message");
   if (g.st === "blocked") return icon("x-circle");
   if (g.st === "running") return `<span class="spin" aria-hidden="true"></span>`;
   if (g.st === "waiting") return icon("clock");
@@ -3282,28 +3466,74 @@ function showOnMap(dgId, nodeId) {
 
 /* ---------- Inbox ---------- */
 
-const REVIEW_WORD = { APPROVED: "approved", CHANGES_REQUESTED: "requested changes", COMMENTED: "commented", DISMISSED: "had a review dismissed" };
+// A row's review verdict: GitHub's decision when the row has it (the open pull request), else what the latest approvals
+// and change requests add up to (the list doesn't fetch the decision, to stay fast).
+function rowVerdict(it) {
+  if (it.reviewDecision) return it.reviewDecision;
+  const c = it.reviewCounts || { approvals: 0, changesRequested: 0 };
+  return c.changesRequested ? "CHANGES_REQUESTED" : c.approvals ? "APPROVED" : null;
+}
 
 // The same four stages as liveStages(), from the summary the extension keeps for every pull request.
 function summaryFlow(it) {
   const c = it.checks || {};
   const checks = !c.total ? (LIVE.github ? "done" : "upcoming") : c.failed ? "blocked" : c.running ? "running" : "done";
   const agents = it.agent ? "done" : "upcoming";
-  const review = it.reviewDecision === "APPROVED" ? "done" : it.reviewDecision === "CHANGES_REQUESTED" ? "blocked" : "active";
+  const v = rowVerdict(it);
+  const review = it.state === "MERGED" ? "done" : it.state === "CLOSED" ? "closed" : v === "APPROVED" ? "done" : v === "CHANGES_REQUESTED" ? "blocked" : "active";
   const merge = it.state === "MERGED" ? "done" : it.state === "CLOSED" || it.mergeStateStatus === "DIRTY" ? "blocked" : it.mergeStateStatus === "CLEAN" ? "active" : "upcoming";
   return [checks, agents, review, merge];
 }
 
 function summaryFlowText(it) {
   const c = it.checks || {};
-  if (it.state === "MERGED") return "Merged";
-  if (it.state === "CLOSED") return "Closed";
+  if (it.state === "MERGED") return `Merged${it.mergedAt ? ` ${timeAgo(it.mergedAt)}` : ""}`;
+  if (it.state === "CLOSED") return `Closed${it.closedAt ? ` ${timeAgo(it.closedAt)}` : ""}`;
   if (c.failed) return `Checks · ${plural(c.failed, "check")} failing`;
   if (c.running) return `Checks · ${c.running} running`;
   if (!it.agent) return "Agent review · not run yet";
-  if (it.reviewDecision === "APPROVED") return it.mergeStateStatus === "CLEAN" ? "Merge · ready" : "Merge · waiting on requirements";
-  if (it.reviewDecision === "CHANGES_REQUESTED") return "Review · changes requested";
-  return "Review · review required";
+  const v = rowVerdict(it);
+  const n = it.reviewCounts || { approvals: 0, changesRequested: 0 };
+  if (v === "APPROVED") {
+    if (it.mergeStateStatus === "CLEAN") return "Merge · ready";
+    if (it.mergeStateStatus === "DIRTY") return "Merge · conflicts";
+    if (it.mergeStateStatus) return "Merge · waiting on requirements";
+    return it.reviewDecision ? "Review · approved" : `Review · ${plural(n.approvals, "approval")}`;
+  }
+  if (v === "CHANGES_REQUESTED") return it.reviewDecision || !n.changesRequested ? "Review · changes requested" : `Review · changes requested by ${n.changesRequested}`;
+  if (it.reviewDecision === "REVIEW_REQUIRED") return n.approvals ? `Review · ${plural(n.approvals, "approval")}, more required` : "Review · review required";
+  return "Review · no approvals yet";
+}
+
+const ROW_DID = { APPROVED: "approved", CHANGES_REQUESTED: "requested changes", COMMENTED: "commented" };
+
+/**
+ * Your review on a row, as the sidebar says it: "You approved 2d ago", "You approved, then commented 5h ago", "Your
+ * review was dismissed 1d ago", with hints while it's open: "re-requested", "new commits since", "updated since".
+ * Nothing on your own pull requests, or when you haven't reviewed it. { text, tone, hints }.
+ */
+function rowReview(it) {
+  if (it.own) return null;
+  const last = it.viewerLastReview || null;
+  const before = it.viewerReview === "APPROVED" || it.viewerReview === "CHANGES_REQUESTED" ? ROW_DID[it.viewerReview] : "";
+  const dismissed = last ? last.state === "DISMISSED" : it.viewerReview === "DISMISSED";
+  const words = !last ? before : last.state === "COMMENTED" && before ? `${before}, then commented` : ROW_DID[last.state] || "";
+  if (!words && !dismissed) return null;
+  const when = last ? ` ${shortAgo(last.at)}` : "";
+  const open = !it.state || it.state === "OPEN";
+  const since = it.sinceReview || {};
+  return {
+    text: dismissed ? `Your review was dismissed${when}` : `You ${words}${when}`,
+    tone: dismissed ? "" : it.viewerReview === "APPROVED" ? "ok" : it.viewerReview === "CHANGES_REQUESTED" ? "bad" : "blue",
+    hints: open ? [it.requested ? "re-requested" : "", since.newCommits ? "new commits since" : since.updated ? "updated since" : ""].filter(Boolean) : [],
+  };
+}
+
+// Draft, merged, closed and conflicts, as badges after the title.
+function rowBadges(it) {
+  if (it.state === "MERGED") return [["Merged", "ok"]];
+  if (it.state === "CLOSED") return [["Closed", "bad"]];
+  return [it.isDraft ? ["Draft", ""] : null, it.mergeStateStatus === "DIRTY" ? ["Conflicts", "bad"] : null].filter(Boolean);
 }
 
 // Pull requests can come from several repositories, so numbers alone don't tell them apart.
@@ -3327,15 +3557,16 @@ function liveRowHTML(it) {
   if (it.drafts) notes.push(`${plural(it.drafts, "draft")} saved`);
   if (it.agent) notes.push(it.agent.openHigh ? plural(it.agent.openHigh, "high agent finding") : it.agent.open ? plural(it.agent.open, "agent finding") : it.agent.findings ? "Agent findings decided" : "Agents found nothing");
   if (it.description) notes.push(it.description.gaps ? `Description: ${plural(it.description.gaps, "gap")}` : "Description covers the rules");
-  if (it.viewerReview) notes.push(`You ${REVIEW_WORD[it.viewerReview] || "reviewed"}`);
+  const you = rowReview(it);
+  const badges = rowBadges(it).map(([label, tone]) => `<span class="pill sm${tone ? " " + tone : ""}">${label}</span>`).join("");
   // Before its diff is built, a row only has GitHub's added and removed line counts to go on.
   const minutes = Math.max(1, Math.round((it.weight || (it.additions || 0) + (it.deletions || 0)) / PACE));
   const risk = liveRisk(it);
   const where = liveRepos().length > 1 ? `${(it.repo || LIVE.repo).split("/").pop()} #${it.number}` : `#${it.number}`;
   return `<li><button type="button" class="pr-row${current ? " is-current" : ""}" data-act="open-live-pr" data-key="${esc(itemKey(it))}" data-href="${esc(it.href || "")}">
     ${avatar(author)}
-    <span class="pr-row-main"><span class="pr-row-title">${esc(it.title || `Pull request #${it.number}`)}</span>
-      <span class="pr-row-meta"><span class="mono">${esc(where)}</span>${notes.length ? ` · ${esc(notes.join(" · "))}` : ""}${current ? ` · <span class="pr-row-note is-new">Open now</span>` : ""}</span></span>
+    <span class="pr-row-main"><span class="pr-row-title">${esc(it.title || `Pull request #${it.number}`)}${badges ? ` <span class="pr-row-badges">${badges}</span>` : ""}</span>
+      <span class="pr-row-meta"><span class="mono">${esc(where)}</span>${you ? ` · <span class="pr-row-you${you.tone ? " y-" + you.tone : ""}">${esc(you.text)}</span>${you.hints.map((h) => ` · <span class="pr-row-note is-new">${esc(h)}</span>`).join("")}` : ""}${notes.length ? ` · ${esc(notes.join(" · "))}` : ""}${current ? ` · <span class="pr-row-note is-new">Open now</span>` : ""}</span></span>
     <span class="pr-row-flow">${miniTrackHTML(flow)}<span>${esc(flowText)}</span></span>
     <span class="pr-row-size">${risk ? riskBadgeHTML(risk) : ""}<span><span class="n-add">+${num(it.additions)}</span> <span class="n-del">−${num(it.deletions)}</span></span>
       <span class="dim">${it.hunks ? `${Math.min(it.reviewed || 0, it.hunks)} of ${it.hunks} hunks · ` : ""}about ${readTime(minutes)}</span></span>
@@ -3645,6 +3876,38 @@ function runsSectionHTML(r) {
   </section>`;
 }
 
+/* ---------- The pull request changed on GitHub ---------- */
+
+// The extension tells the page when the list's refresh sees the open pull request change ("host-pr-changed", with the
+// most important change as its kind). The page isn't reloaded, so the reader keeps their place: one bar offers
+// Refresh, and the latest change replaces the one before.
+const NOTICE = {
+  merged: ["merge", "This pull request was merged."],
+  closed: ["x-circle", "This pull request was closed."],
+  reopened: ["pr", "This pull request was reopened."],
+  commits: ["commit", "New commits were pushed."],
+  updated: ["bell", "Updated on GitHub."],
+};
+
+function noticeHTML() {
+  const n = S.notice;
+  if (!n || S.noticeHidden || !NOTICE[n.kind]) return "";
+  const [ic, text] = NOTICE[n.kind];
+  return `<div class="notice n-${n.kind}">${icon(ic)}<span>${text}</span>
+    <button type="button" class="notice-btn" data-act="live-refresh">Refresh</button>
+    <button type="button" class="icon-btn sm" data-act="notice-close" aria-label="Dismiss">${icon("x")}</button></div>`;
+}
+
+function showChange(m) {
+  if (!m.change || !NOTICE[m.change.kind] || String(m.key || "").toLowerCase() !== LIVE_KEY.toLowerCase()) return;
+  S.notice = m.change;
+  S.noticeHidden = false;
+  const el = $("#notice");
+  if (el) el.innerHTML = noticeHTML();
+  // An open confirm to post now says the pull request is merged or closed.
+  if (S.pushConfirm) refreshPushFoot();
+}
+
 /* ---------- Rendering and refresh ---------- */
 
 function tabHTML() {
@@ -3660,7 +3923,7 @@ function render() {
     ? inboxHTML()
     : S.view === "metrics"
     ? metricsHTML()
-    : `${ribbonHTML()}${topbarHTML()}<main class="page" id="main">${prHeadHTML()}<div id="tab">${tabHTML()}</div></main>${dockHTML()}${tourHTML()}`;
+    : `${ribbonHTML()}${topbarHTML()}<div class="notice-slot" id="notice" role="status" aria-live="polite">${noticeHTML()}</div><main class="page" id="main">${prHeadHTML()}<div id="tab">${tabHTML()}</div></main>${dockHTML()}${tourHTML()}`;
   mountDiagrams();
   refreshTour();
   onScroll();
@@ -3887,7 +4150,7 @@ function moveFile(dir) {
 function nextUnreviewed() {
   closeSheet(true);
   if (S.tab !== "changes") setTab("changes");
-  const pool = S.filter === "new" ? ORDER.filter((k) => HUNK.get(k).h.fresh) : ORDER;
+  const pool = S.filter === "new" ? ORDER.filter((k) => isNew(HUNK.get(k).h)) : ORDER;
   let todo = pool.filter((k) => !S.reviewed.has(k));
   if (!todo.length) todo = ORDER.filter((k) => !S.reviewed.has(k));
   if (!todo.length) { toast("Everything is reviewed."); openFinish(); return; }
@@ -3945,7 +4208,7 @@ function markFocused() {
   if (!S.focus) { move(1); return; }
   const key = S.focus;
   if (toggleHunk(key)) {
-    const pool = S.filter === "new" ? ORDER.filter((k) => HUNK.get(k).h.fresh) : ORDER;
+    const pool = S.filter === "new" ? ORDER.filter((k) => isNew(HUNK.get(k).h)) : ORDER;
     const next = pool.slice(pool.indexOf(key) + 1).find((k) => !S.reviewed.has(k));
     if (next) focusHunk(next, true);
     else S.focus = null;
@@ -4499,7 +4762,8 @@ const ACTIONS = {
     toast(S.fold ? "Lockfiles are summarized and reviewed code is folded." : "Showing every line.");
   },
   split: (el) => { S.split = el.dataset.split === "1"; save(); refreshStream(); refreshChrome(); },
-  "banner-close": () => { S.banner = false; save(); $("#welcome")?.remove(); },
+  "notice-close": () => { S.noticeHidden = true; const el = $("#notice"); if (el) el.innerHTML = ""; },
+  "banner-close": () => { S.bannerHead = D.head ? D.head.sha : ""; save(); $("#welcome")?.remove(); },
   "file-toggle": (el) => {
     const i = +el.dataset.f;
     if (isCollapsed(files[i])) { S.fileShut.delete(i); S.fileOpen.add(i); } else { S.fileOpen.delete(i); S.fileShut.add(i); }
@@ -4840,6 +5104,7 @@ window.addEventListener("hashchange", () => { tickActive(); routeFromHash(); ren
 // list redraws in place, and a review keeps the new list for when the reader goes back to it.
 window.addEventListener("diffline-host", (e) => {
   const m = e.detail || {};
+  if (m.type === "host-pr-changed") { showChange(m); return; }
   if (m.type !== "host-view" && m.type !== "host-list") return;
   if (Array.isArray(m.list)) LIVE.list = m.list;
   if (Array.isArray(m.groups)) LIVE.groups = m.groups;

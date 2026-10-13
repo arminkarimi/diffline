@@ -88,7 +88,7 @@ test("stateWords and stateLine: merged, closed, draft, conflicts", () => {
   assert.deepEqual(stateWords(summary()), []);
   assert.equal(stateLine(summary(), NOW), "Open");
   assert.equal(stateLine(summary({ isDraft: true, mergeStateStatus: "DIRTY" }), NOW), "Open, draft · conflicts with main");
-  assert.equal(stateLine(summary({ state: "MERGED", mergedAt: "2026-10-12T12:00:00Z" }), NOW), "Merged 24 hours ago");
+  assert.equal(stateLine(summary({ state: "MERGED", mergedAt: "2026-10-12T12:00:00Z" }), NOW), "Merged 1 day ago");
   assert.equal(stateLine(summary({ state: "CLOSED", closedAt: "2026-10-10T12:00:00Z" }), NOW), "Closed 3 days ago without merging");
 });
 
@@ -120,7 +120,7 @@ test("agentStatus and agentLines: freshness says since the agents ran, not since
   const agent = { commit: OLD, ranAt: "2026-10-12T12:00:00Z", findings: [{ id: "a", severity: "high" }, { id: "b", severity: "low" }], description: null };
   const behind = record(summary(), { agent });
   assert.equal(agentStatus(behind, NOW).text, "agents: 2 findings, behind");
-  assert.deepEqual(agentLines(behind, NOW), ["Agents reviewed bbbbbbb 24 hours ago: 2 findings.", "New commits since the agents ran: Run reviews the latest."]);
+  assert.deepEqual(agentLines(behind, NOW), ["Agents reviewed bbbbbbb 1 day ago: 2 findings.", "New commits since the agents ran: Run reviews the latest."]);
   const current = record(summary({ updatedAt: "2026-10-12T12:30:00Z" }), { agent: { ...agent, commit: HEAD } });
   assert.equal(agentStatus(current, NOW).text, "✓ agents: 2 findings");
   assert.equal(agentLines(current, NOW)[1], "Updated on GitHub since the agents ran (description, comments or reviews): Run starts a fresh review.");
