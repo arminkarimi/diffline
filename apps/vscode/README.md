@@ -1,6 +1,6 @@
 # Diffline for VS Code
 
-Review GitHub pull requests in VS Code with agents that run on your computer. When a pull request asks for your review, Diffline's agents check its description, set a reading order, draw the flow it changes and look for problems. You review in the Diffline page, add comments or adopt the agents' wording, and post your review to GitHub. Nothing reaches GitHub until you press **Post now**.
+Review GitHub pull requests in VS Code or Cursor with agents that run on your computer. When a pull request asks for your review, Diffline's agents check its description, set a reading order, draw the flow it changes and look for problems. You review in the Diffline page, add comments or adopt the agents' wording, and post your review to GitHub. Nothing reaches GitHub until you press **Post now**.
 
 This is a preview. Expect rough edges, and check the log (**Diffline: Show Agent Log**) when something looks wrong.
 
@@ -8,7 +8,7 @@ Every feature is described in [Features](https://github.com/arminkarimi/diffline
 
 ## What you need
 
-- **VS Code** 1.95 or later.
+- **VS Code** 1.95 or later, or **Cursor**. Everything here works the same in both; where this README says VS Code, read Cursor if that's your editor.
 - **GitHub CLI** ([cli.github.com](https://cli.github.com)), signed in: `gh auth login`. Diffline reads pull requests and posts reviews through it.
 - **git**.
 - **An agent harness**: the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) (`claude`), the [Codex CLI](https://github.com/openai/codex) (`codex`) or [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (`pi`), installed and signed in. Pi works with many model providers: sign in by running `pi`, then `/login`, or set your provider's API key. Use one or more: **Diffline: Choose Agent Harnesses…** sets the default and, if you like, a different one per agent.
@@ -19,6 +19,7 @@ Diffline isn't on the Marketplace yet. Install the `.vsix` file, from a [release
 
 - In VS Code: open the Extensions view, then **…** → **Install from VSIX…**, and pick `diffline-0.2.1.vsix`.
 - Or in a terminal: `code --install-extension diffline-0.2.1.vsix`.
+- In Cursor: run **Extensions: Install from VSIX…** from the Command Palette and pick the file, or in a terminal `cursor --install-extension diffline-0.2.1.vsix`. If `cursor` isn't found, run **Shell Command: Install 'cursor' command** from the Command Palette first. Diffline isn't on Open VSX yet.
 
 Reload the window if VS Code asks. To update, install the newer `.vsix` the same way. To remove Diffline, uninstall it from the Extensions view; `~/.diffline` stays until you delete it.
 

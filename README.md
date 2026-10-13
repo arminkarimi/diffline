@@ -1,6 +1,6 @@
 # Diffline
 
-Diffline is a VS Code extension for reviewing GitHub pull requests. Review agents run on your computer, through the Claude Code CLI, the Codex CLI or Pi, before you read a line. They check the description, set a reading order, draw the flow the change touches and report findings. You review in one page, decide what goes into your review, and post it to GitHub. Nothing reaches GitHub until you press **Post now**.
+Diffline is a VS Code extension for reviewing GitHub pull requests; it works in Cursor too. Review agents run on your computer, through the Claude Code CLI, the Codex CLI or Pi, before you read a line. They check the description, set a reading order, draw the flow the change touches and report findings. You review in one page, decide what goes into your review, and post it to GitHub. Nothing reaches GitHub until you press **Post now**.
 
 ## Status
 
@@ -8,7 +8,7 @@ Preview, version 0.2.1. It reviews real pull requests, and it has rough edges. D
 
 ## Install
 
-You need VS Code 1.95 or later, git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI, the Codex CLI or Pi signed in.
+You need VS Code 1.95 or later (or Cursor), git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI, the Codex CLI or Pi signed in.
 
 Install the `.vsix` file:
 
@@ -16,7 +16,7 @@ Install the `.vsix` file:
 code --install-extension diffline-0.2.1.vsix
 ```
 
-Or in VS Code: Extensions view, **…** → **Install from VSIX…**. To build the `.vsix` yourself, see [Development](#development).
+Or in VS Code: Extensions view, **…** → **Install from VSIX…**. In Cursor, run `cursor --install-extension diffline-0.2.1.vsix`, or **Extensions: Install from VSIX…** from the Command Palette. To build the `.vsix` yourself, see [Development](#development).
 
 The [extension's README](apps/vscode/README.md) covers the first run, settings, costs, privacy and troubleshooting.
 
@@ -56,6 +56,7 @@ npm test            # unit tests
 npm run typecheck
 npm run package     # writes apps/vscode/diffline-<version>.vsix
 npm run install-local   # packages it and installs it into VS Code; reload the window after
+CODE=cursor npm run install-local   # the same for Cursor
 ```
 
 Open `apps/vscode` in VS Code and press F5 to run the extension in a development window. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest: the smoke tests, code style and how to cut a release. [docs/architecture.md](docs/architecture.md) explains how the extension works.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Cursor**: the READMEs say Diffline works in Cursor and how to install it there (`cursor --install-extension`, or **Extensions: Install from VSIX…**).
+
 ## 0.2.1
 
 Copy an agent review as Markdown for another agent, and jumps to findings that land on large pull requests.
