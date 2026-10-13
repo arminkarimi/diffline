@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+See where every pull request stands: your review and what changed since, merged and closed pull requests, and notices while a review is open. Works in Cursor.
 
 - **Cursor**: the READMEs say Diffline works in Cursor and how to install it there (`cursor --install-extension`, or **Extensions: Install from VSIX…**).
 - **Your review on every row.** Sidebar rows say how you reviewed a pull request, when, and what changed since: "you approved 2d ago · new commits", "you commented 5h ago · updated since", "re-requested · you approved 3d ago". They also say merged, closed and conflicts. The hover adds your review's commit, the pull request's state and its approvals, and the agents' lines now say "since the agents ran". Rows whose agents reviewed an older commit say `behind` instead of "new commits since".
