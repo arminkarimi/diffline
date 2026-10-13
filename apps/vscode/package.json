@@ -530,6 +530,13 @@
           "minimum": 15,
           "markdownDescription": "How often to check GitHub for new pull requests and pushes, in seconds."
         },
+        "diffline.watch.recentlyClosedDays": {
+          "type": "integer",
+          "default": 7,
+          "minimum": 0,
+          "maximum": 90,
+          "markdownDescription": "Keep pull requests you reviewed or wrote listed for this many days after they're merged or closed, under **Recently merged or closed**, so you can see how they ended. 0 turns it off."
+        },
         "diffline.clones": {
           "type": "object",
           "additionalProperties": {

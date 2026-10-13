@@ -16,6 +16,7 @@ import { findSecrets } from "./secrets.ts";
 import { buildGroups, type RowGroup, type SidebarConfig } from "./grouping.ts";
 import { countChecks, fetchCodeowners, fetchPullRequest, fetchPullRequestFiles, fetchViewerTeams, GhError, pushReview, searchPullRequests, searchReviewable } from "./github.ts";
 import { Semaphore } from "./limit.ts";
+import { reviewCounts, sinceReview } from "./review-status.ts";
 import { Locks } from "./locks.ts";
 import type { Repos } from "./repos.ts";
 import { computeRisk } from "./risk.ts";
@@ -38,6 +39,11 @@ export interface ServiceConfig {
     others: boolean;
     repositories: string[];
     pollSeconds: number;
+    /**
+     * diffline.watch.recentlyClosedDays: keep pull requests you reviewed or wrote listed for this many days after
+     * they're merged or closed, under Recently merged or closed. 0 turns it off; missing means 7.
+     */
+    recentlyClosedDays?: number;
   };
   agents: {
     autoRun: boolean;
@@ -185,6 +191,11 @@ const runLock = (key: PrKey) => `run-${prSlug(key)}`;
 const agentSummary = (a: AgentFile | null): PrRecord["agent"] =>
   a ? { commit: a.commit, ranAt: a.ranAt, findings: a.findings.map((f) => ({ id: f.id, severity: f.severity })), description: a.description || null } : null;
 
+/** Whether a pull request moved on GitHub between two list summaries: its state, head or last update. */
+function changedOnGitHub(before: PullRequestSummary | null, after: PullRequestSummary): boolean {
+  return !!before && (before.state !== after.state || before.headRefOid !== after.headRefOid || before.updatedAt !== after.updatedAt);
+}
+
 const keyOf = (s: PullRequestSummary): PrKey => {
   const [owner, name] = s.repo.split("/");
   return { owner, name, number: s.number };
@@ -217,6 +228,9 @@ export class DifflineService extends EventEmitter {
    */
   private extras = new Map<string, PullRequestSummary>();
   private extraTotals: Partial<Record<"team", { shown: number; total: number }>> = {};
+  /** The last recently-closed search's results, kept when one fails so merged pull requests don't drop out. */
+  private closedItems = new Map<string, PullRequestSummary>();
+  private closedTotals: { shown: number; total: number } | null = null;
   /** Pull requests whose changed files you or your teams own, as lowercase keys. */
   private codeOwned = new Set<string>();
   /** Changed files by pull request and head, so a refresh doesn't fetch them again. */
@@ -330,29 +344,58 @@ export class DifflineService extends EventEmitter {
     return this.refreshing;
   }
 
+  /** Recently closed pull requests you reviewed or wrote: a request of its own, sent alongside the main search. */
+  private async searchClosed(days: number, authored: boolean): Promise<void> {
+    if (days <= 0) {
+      this.closedItems = new Map();
+      this.closedTotals = null;
+      return;
+    }
+    try {
+      const res = await searchPullRequests({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days, authored } });
+      for (const e of res.errors || []) this.log(`Recently closed: ${e}`);
+      this.closedItems = new Map(res.items.map((s) => [prKeyString(keyOf(s)).toLowerCase(), s]));
+      this.closedTotals = res.totals.closed;
+    } catch (err) {
+      // The last ones found stay until the search works again.
+      this.log(`Couldn't load recently merged or closed pull requests: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   private async doRefresh(): Promise<void> {
     const cfg = this.config();
     const pinned = this.all().filter((r) => r.pinned).map((r) => r.key);
     try {
-      const res = await searchPullRequests({
-        direct: cfg.watch.direct,
-        // Team requests can run to a hundred pull requests, which makes GitHub's search slow; they load in the
-        // background (refreshExtras) so the list shows at once.
-        team: false,
-        assigned: cfg.watch.assigned,
-        reviewed: cfg.watch.reviewed,
-        authored: cfg.watch.authored,
-        repositories: cfg.watch.repositories,
-        pinned,
-      });
+      const [res] = await Promise.all([
+        searchPullRequests({
+          direct: cfg.watch.direct,
+          // Team requests can run to a hundred pull requests, which makes GitHub's search slow; they load in the
+          // background (refreshExtras) so the list shows at once.
+          team: false,
+          assigned: cfg.watch.assigned,
+          reviewed: cfg.watch.reviewed,
+          authored: cfg.watch.authored,
+          repositories: cfg.watch.repositories,
+          pinned,
+        }),
+        this.searchClosed(Math.max(0, Math.floor(cfg.watch.recentlyClosedDays ?? 7)), cfg.watch.authored),
+      ]);
       this.viewer = res.viewer;
-      this.totals = { ...res.totals, ...this.extraTotals };
+      this.totals = { ...res.totals, ...this.extraTotals, ...(this.closedTotals ? { closed: this.closedTotals } : {}) };
       this.lastError = res.errors && res.errors.length ? res.errors.join("; ") : null;
       const seen = new Set<string>();
-      const found = new Set(res.items.map((s) => prKeyString(keyOf(s)).toLowerCase()));
+      // Recently closed ones join the main search's; a pinned one that closed has both reasons.
+      const items = res.items.map((s) => {
+        const closed = this.closedItems.get(prKeyString(keyOf(s)).toLowerCase());
+        return closed ? { ...s, reasons: [...new Set([...s.reasons, ...closed.reasons])] } : s;
+      });
+      const inMain = new Set(items.map((s) => prKeyString(keyOf(s)).toLowerCase()));
+      items.push(...[...this.closedItems].filter(([id]) => !inMain.has(id)).map(([, s]) => s));
+      const found = new Set(items.map((s) => prKeyString(keyOf(s)).toLowerCase()));
       // Reviewable pull requests from the follow-up search stay until it runs again.
       const extras = [...this.extras.values()].filter((s) => !found.has(prKeyString(keyOf(s)).toLowerCase()));
-      for (const s of [...res.items, ...extras]) {
+      const moved: PrKey[] = [];
+      for (const s of [...items, ...extras]) {
         const key = keyOf(s);
         const id = prKeyString(key).toLowerCase();
         const r = this.record(key);
@@ -360,6 +403,7 @@ export class DifflineService extends EventEmitter {
         // A pull request in both searches keeps the background search's reasons too.
         const extra = this.extras.get(id);
         const merged = extra && extra !== s ? { ...s, reasons: [...new Set([...s.reasons, ...extra.reasons])] } : s;
+        if (changedOnGitHub(r.summary, merged)) moved.push(key);
         r.summary = this.withKnown(id, merged);
         seen.add(id);
       }
@@ -372,6 +416,7 @@ export class DifflineService extends EventEmitter {
       this.lastRefresh = Date.now();
       void this.memory.update("lastList", this.all().map((r) => r.summary).filter(Boolean));
       this.changed();
+      for (const key of moved) this.emit("pullRequestChanged", key);
       void this.refreshExtras();
       this.scheduleAutomaticRuns();
       this.offerStops();
@@ -468,10 +513,12 @@ export class DifflineService extends EventEmitter {
     const backgroundOnly = (r: PrRecord) => !r.pinned && !!r.summary && r.summary.reasons.every((x) => x === "team-requested" || x === "other" || x === "code-owner");
     const before = this.extras;
     this.extras = found;
+    const moved: PrKey[] = [];
     for (const [id, item] of found) {
       const r = this.record(keyOf(item));
       if (!r.summary || backgroundOnly(r)) {
         if (r.summary?.headRefOid !== item.headRefOid) r.headSeenAt = Date.now();
+        if (changedOnGitHub(r.summary, item)) moved.push(r.key);
         r.summary = this.withKnown(id, item);
       } else {
         const reasons = [...new Set([...r.summary.reasons, ...item.reasons])];
@@ -488,6 +535,7 @@ export class DifflineService extends EventEmitter {
       }
     }
     this.changed();
+    for (const key of moved) this.emit("pullRequestChanged", key);
   }
 
   private static readonly OWNERS_TTL = 60 * 60_000;
@@ -528,9 +576,9 @@ export class DifflineService extends EventEmitter {
     }
   }
 
-  /** Changed-file lists for rows the search returned without them, so every row gets a risk score. */
+  /** Changed-file lists for open rows the search returned without them, so each gets a risk score (merged ones show none). */
   private async fillFiles(): Promise<void> {
-    const need = this.all().filter((r) => r.summary && !r.summary.files.length && !r.builtFiles && r.summary.changedFiles > 0);
+    const need = this.all().filter((r) => r.summary && r.summary.state === "OPEN" && !r.summary.files.length && !r.builtFiles && r.summary.changedFiles > 0);
     for (let i = 0; i < need.length; i += 20) {
       const batch = need.slice(i, i + 20);
       try {
@@ -728,6 +776,9 @@ export class DifflineService extends EventEmitter {
         const pr = isCurrent && currentDetail ? currentDetail.pr : null;
         const desc = r.agent?.description;
         const checks = pr ? countChecks(pr.checks) : s?.checks || { total: 0, failed: 0, running: 0 };
+        // The open pull request's detail always knows your latest review; the list knows it for searches you're in.
+        const last = pr ? (pr.lastReview?.state ? { state: pr.lastReview.state, at: pr.lastReview.submittedAt, commit: pr.lastReview.commit } : null) : (s?.viewerLastReview ?? null);
+        const since = pr ? sinceReview(last, pr) : s?.sinceReview;
         return {
           number: r.key.number,
           repo: `${r.key.owner}/${r.key.name}`,
@@ -740,6 +791,10 @@ export class DifflineService extends EventEmitter {
           createdAt: pr?.createdAt ?? s?.createdAt ?? null,
           state: pr?.state ?? s?.state ?? null,
           isDraft: pr?.isDraft ?? s?.isDraft ?? null,
+          mergedAt: pr?.mergedAt ?? s?.mergedAt ?? null,
+          closedAt: pr?.closedAt ?? s?.closedAt ?? null,
+          updatedAt: pr?.updatedAt ?? s?.updatedAt ?? null,
+          headRefOid: pr?.headRefOid ?? s?.headRefOid ?? null,
           baseRefName: pr?.baseRefName ?? s?.baseRefName ?? null,
           headRefName: pr?.headRefName ?? s?.headRefName ?? null,
           defaultBranch: pr?.defaultBranch ?? null,
@@ -759,6 +814,9 @@ export class DifflineService extends EventEmitter {
           description: desc ? { kind: desc.kind, gaps: desc.items.filter((it) => it.status === "partly" || it.status === "missing").length, rules: desc.items.length } : null,
           requested: s?.requested ?? false,
           viewerReview: s?.viewerReview ?? null,
+          viewerLastReview: last,
+          sinceReview: since ?? null,
+          reviewCounts: s?.reviewCounts && !pr ? s.reviewCounts : reviewCounts(pr ? pr.latestReviews : s?.latestReviews),
           own: s?.own ?? false,
           riskInput: this.riskInput(r, state),
         };

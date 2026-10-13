@@ -25,6 +25,15 @@ const RELATIONSHIP: Array<{ id: string; label: string; reason: Reason; search?: 
   { id: "pinned", label: "Opened here", reason: "pinned" },
 ];
 
+/**
+ * Merged and closed pull requests (the recently-closed search, or pinned ones), whatever else they're listed for: the
+ * last group, after Others you could review, since there's nothing left to review.
+ */
+const CLOSED = { id: "closed", label: "Recently merged or closed", reason: "recently-closed" as Reason, search: "closed" };
+
+/** Merged or closed on GitHub. */
+export const isClosed = (r: PrRecord) => r.summary?.state === "MERGED" || r.summary?.state === "CLOSED";
+
 /** Short words for why a row is listed, shown in the repository view. */
 const TAG: Partial<Record<Reason, string>> = {
   "review-requested": "requested",
@@ -45,6 +54,7 @@ export const WHY: Record<Reason, string> = {
   authored: "it's yours",
   watched: "you watch the repository",
   pinned: "you opened it here",
+  "recently-closed": "it was merged or closed recently and you reviewed it or wrote it",
   other: "it's in one of your repositories and needs a review",
 };
 
@@ -64,8 +74,14 @@ export function compareRows<T extends SortableRow>(sortBy: SortBy): (a: T, b: T)
   return (a, b) => (b.risk?.score ?? -1) - (a.risk?.score ?? -1) || updated(a, b);
 }
 
-/** The first relationship group a pull request fits, or null. */
+/** The first relationship group a pull request fits, or null. Merged and closed ones go in Recently merged or closed. */
 export function relationshipOf(r: PrRecord): (typeof RELATIONSHIP)[number] | null {
+  if (isClosed(r)) return CLOSED;
+  return reasonGroup(r);
+}
+
+/** The first relationship group a pull request's reasons fit, whatever its state. */
+function reasonGroup(r: PrRecord): (typeof RELATIONSHIP)[number] | null {
   const reasons = r.summary?.reasons || [];
   return RELATIONSHIP.find((g) => (g.reason === "pinned" ? r.pinned : reasons.includes(g.reason))) || null;
 }
@@ -96,7 +112,8 @@ export function buildGroups<T extends GroupRow>(rows: T[], cfg: SidebarConfig, t
     const byRepo = new Map<string, T[]>();
     for (const row of listed) {
       const repo = `${row.record.key.owner}/${row.record.key.name}`;
-      const rel = relationshipOf(row.record);
+      // Merged and closed ones stay in their repository; the row says merged or closed, and the tag still says why.
+      const rel = reasonGroup(row.record);
       row.tag = rel ? TAG[rel.reason] : undefined;
       row.inRepoGroup = true;
       byRepo.set(repo, [...(byRepo.get(repo) || []), row]);
@@ -115,6 +132,13 @@ export function buildGroups<T extends GroupRow>(rows: T[], cfg: SidebarConfig, t
   }
   const others = rows.filter((r) => isOther(r.record)).sort(sort).slice(0, Math.max(0, cfg.othersLimit));
   if (others.length) groups.push({ id: "others", label: "Others you could review", description: `top ${others.length}`, rows: others });
+  if (cfg.groupBy !== "repository") {
+    // Most recently updated first, whatever the sort: risk means little once it's merged. Folded when long, as team requests are.
+    const closed = listed.filter((row) => isClosed(row.record)).sort(compareRows<T>("updated"));
+    const t = totals[CLOSED.search];
+    const description = t && t.total > t.shown ? `${closed.length} of ${t.total}` : String(closed.length);
+    if (closed.length) groups.push({ id: CLOSED.id, label: CLOSED.label, description, rows: closed, collapsed: closed.length > 12 });
+  }
   return groups;
 }
 

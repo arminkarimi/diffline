@@ -21,8 +21,9 @@ export function hostShim(key: string): string {
   const pending = new Map();
   window.addEventListener("message", (event) => {
     const m = event.data;
-    // The extension asks the page to show a view (the sidebar's Home), with a fresh list.
-    if (m && (m.type === "host-view" || m.type === "host-list")) { window.dispatchEvent(new CustomEvent("diffline-host", { detail: m })); return; }
+    // The extension asks the page to show a view (the sidebar's Home), with a fresh list, or says the pull request on
+    // screen changed on GitHub since the page was built ("host-pr-changed", see ReviewPanel.noticeChange).
+    if (m && (m.type === "host-view" || m.type === "host-list" || m.type === "host-pr-changed")) { window.dispatchEvent(new CustomEvent("diffline-host", { detail: m })); return; }
     if (!m || m.type !== "api-result") return;
     const p = pending.get(m.id);
     if (!p) return;

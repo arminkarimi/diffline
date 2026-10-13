@@ -4,6 +4,7 @@
 
 import { CODEOWNERS_PATHS } from "./codeowners.ts";
 import { run, type RunResult } from "./exec.ts";
+import { reviewCounts, sinceReview, viewerLastReviewFrom } from "./review-status.ts";
 import { prKeyString } from "./types.ts";
 import type {
   Check,
@@ -26,8 +27,9 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     defaultBranchRef { name }
     pullRequest(number: $number) {
-      number title body url state isDraft createdAt
+      number title body url state isDraft createdAt updatedAt mergedAt closedAt
       author { login ... on User { name } }
+      mergedBy { login ... on User { name } }
       baseRefName headRefName baseRefOid headRefOid
       reviewDecision mergeStateStatus
       labels(first: 20) { nodes { name } }
@@ -66,7 +68,7 @@ const UNRESOLVE = "mutation($id: ID!) { unresolveReviewThread(input: {threadId: 
  */
 const SUMMARY_FRAGMENT = `
 fragment DifflineSummary on PullRequest {
-  number title url createdAt updatedAt state isDraft
+  number title url createdAt updatedAt state isDraft mergedAt closedAt
   author { login ... on User { name } }
   repository { nameWithOwner }
   baseRefName headRefName headRefOid
@@ -79,6 +81,18 @@ fragment DifflineSummary on PullRequest {
     checkRunCountsByState { state count }
     statusContextCountsByState { state count }
   } } } } }
+}
+`;
+
+/**
+ * The summary plus your latest review of any state (latestReviews: each reviewer's latest, comments included), for
+ * the searches you're involved in. Measured on 50 pull requests, latestReviews added about 0.6-2 seconds to a search,
+ * so team requests, watched repositories and others don't ask for it: their searches are the large ones.
+ */
+const MINE_FRAGMENT = `
+fragment DifflineMine on PullRequest {
+  ...DifflineSummary
+  latestReviews(first: 30) { nodes { author { login } state submittedAt commit { oid } } }
 }
 `;
 
@@ -258,11 +272,7 @@ export function normalizePullRequest(data: any): PullRequestDetail {
       body: n.body || "",
       commit: n.commit?.oid ?? null,
     }));
-  let lastReview: (typeof reviews)[number] | null = null;
-  for (const r of reviews) {
-    if (!r.login || r.login !== viewer.login || !r.submittedAt) continue;
-    if (!lastReview || r.submittedAt > (lastReview.submittedAt as string)) lastReview = r;
-  }
+  const lastReview = viewerLastReviewFrom(reviews, viewer.login);
 
   const checks: Check[] = [];
   for (const c of rollupContexts(pr)) {
@@ -295,6 +305,10 @@ export function normalizePullRequest(data: any): PullRequestDetail {
     state: pr.state ?? null,
     isDraft: Boolean(pr.isDraft),
     createdAt: pr.createdAt ?? null,
+    updatedAt: pr.updatedAt ?? null,
+    mergedAt: pr.mergedAt ?? null,
+    mergedBy: pr.mergedBy ? person(pr.mergedBy) : null,
+    closedAt: pr.closedAt ?? null,
     author: person(pr.author),
     baseRefName: pr.baseRefName ?? null,
     headRefName: pr.headRefName ?? null,
@@ -317,7 +331,7 @@ export function normalizePullRequest(data: any): PullRequestDetail {
       .filter((n) => n.viewerViewedState === "VIEWED")
       .map((n) => n.path),
     checks,
-    lastReview: lastReview ? { submittedAt: lastReview.submittedAt as string, commit: lastReview.commit } : null,
+    lastReview: lastReview ? { submittedAt: lastReview.at, commit: lastReview.commit, state: lastReview.state } : null,
   };
   return { viewer, pr: normalized, threads };
 }
@@ -349,9 +363,15 @@ export interface SearchOptions {
   repositories: string[];
   /** Pull requests to include whatever their state. */
   pinned: PrKey[];
+  /**
+   * Pull requests merged or closed in the last `days` days that you reviewed (and, with `authored`, that you wrote), so
+   * they keep their row for a while. Missing or 0 days: none. The service sends these as a request of their own, in
+   * parallel with the open ones: 40 closed pull requests made the one request about twice as slow.
+   */
+  closed?: { days: number; authored: boolean };
 }
 
-export type SearchKind = "direct" | "team" | "assigned" | "reviewed" | "authored" | "watched";
+export type SearchKind = "direct" | "team" | "assigned" | "reviewed" | "authored" | "watched" | "closed";
 
 export interface SearchResult {
   viewer: Person;
@@ -383,31 +403,53 @@ const SEARCHES = {
   reviewed: "is:pr is:open reviewed-by:@me -author:@me archived:false sort:updated-desc",
   authored: "is:pr is:open author:@me archived:false sort:updated-desc",
   watched: (repo: string) => `repo:${repo} is:pr is:open archived:false sort:updated-desc`,
+  closedReviewed: (since: string) => `is:pr is:closed reviewed-by:@me -author:@me closed:>=${since} archived:false sort:updated-desc`,
+  closedAuthored: (since: string) => `is:pr is:closed author:@me closed:>=${since} archived:false sort:updated-desc`,
 };
 
-/** Build the single GraphQL request behind searchPullRequests. Pure, for tests. */
-export function buildSearchQuery(opts: SearchOptions, pageSize = 50): { query: string; variables: Record<string, string | number>; sources: SearchSource[] } {
+/** How many recently closed pull requests each of the two searches brings. */
+const CLOSED_PAGE = 20;
+
+/** The first day (UTC, YYYY-MM-DD) of the last `days` days, for closed:>=. */
+export function closedSince(days: number, now = new Date()): string {
+  return new Date(now.getTime() - days * 864e5).toISOString().slice(0, 10);
+}
+
+/**
+ * Build the single GraphQL request behind searchPullRequests. Pure, for tests. The searches you're involved in use the
+ * DifflineMine fragment (with your latest review); team requests and watched repositories the plain summary.
+ */
+export function buildSearchQuery(opts: SearchOptions, pageSize = 50, now = new Date()): { query: string; variables: Record<string, string | number>; sources: SearchSource[] } {
   const sources: SearchSource[] = [];
   const variables: Record<string, string | number> = {};
   const decls: string[] = [];
   const parts: string[] = [];
-  const search = (alias: string, kind: SearchKind, reason: Reason, q: string, label: string) => {
+  let mine = false;
+  const search = (alias: string, kind: SearchKind, reason: Reason, q: string, label: string, involved: boolean, first = pageSize) => {
     decls.push(`$${alias}: String!`);
     variables[alias] = q;
-    parts.push(`${alias}: search(type: ISSUE, query: $${alias}, first: ${pageSize}) { issueCount nodes { ...DifflineSummary } }`);
+    mine ||= involved;
+    parts.push(`${alias}: search(type: ISSUE, query: $${alias}, first: ${first}) { issueCount nodes { ...${involved ? "DifflineMine" : "DifflineSummary"} } }`);
     sources.push({ alias, reason, kind: "search", search: kind, label });
   };
-  if (opts.direct) search("direct", "direct", "review-requested", SEARCHES.direct, "review requested");
-  if (opts.team) search("team", "team", "team-requested", SEARCHES.team, "team review requested");
-  if (opts.assigned) search("assigned", "assigned", "assigned", SEARCHES.assigned, "assigned");
-  if (opts.reviewed) search("reviewed", "reviewed", "reviewed", SEARCHES.reviewed, "reviewed by you");
-  if (opts.authored) search("authored", "authored", "authored", SEARCHES.authored, "authored");
+  if (opts.direct) search("direct", "direct", "review-requested", SEARCHES.direct, "review requested", true);
+  if (opts.team) search("team", "team", "team-requested", SEARCHES.team, "team review requested", false);
+  if (opts.assigned) search("assigned", "assigned", "assigned", SEARCHES.assigned, "assigned", true);
+  if (opts.reviewed) search("reviewed", "reviewed", "reviewed", SEARCHES.reviewed, "reviewed by you", true);
+  if (opts.authored) search("authored", "authored", "authored", SEARCHES.authored, "authored", true);
   const seenRepos = new Set<string>();
   for (const repo of opts.repositories) {
     const name = repo.trim();
     if (!REPO_NAME.test(name) || seenRepos.has(name.toLowerCase())) continue;
     seenRepos.add(name.toLowerCase());
-    search(`watched${seenRepos.size - 1}`, "watched", "watched", SEARCHES.watched(name), name);
+    search(`watched${seenRepos.size - 1}`, "watched", "watched", SEARCHES.watched(name), name, false);
+  }
+  const days = Math.floor(opts.closed?.days ?? 0);
+  if (days > 0) {
+    const since = closedSince(days, now);
+    const first = Math.min(pageSize, CLOSED_PAGE);
+    search("closedReviewed", "closed", "recently-closed", SEARCHES.closedReviewed(since), "recently closed, reviewed by you", true, first);
+    if (opts.closed?.authored) search("closedAuthored", "closed", "recently-closed", SEARCHES.closedAuthored(since), "recently closed, yours", true, first);
   }
   const seenPinned = new Set<string>();
   for (const key of opts.pinned) {
@@ -419,12 +461,14 @@ export function buildSearchQuery(opts: SearchOptions, pageSize = 50): { query: s
     variables[`${alias}Owner`] = key.owner;
     variables[`${alias}Name`] = key.name;
     variables[`${alias}Number`] = key.number;
-    parts.push(`${alias}: repository(owner: $${alias}Owner, name: $${alias}Name) { pullRequest(number: $${alias}Number) { ...DifflineSummary } }`);
+    parts.push(`${alias}: repository(owner: $${alias}Owner, name: $${alias}Name) { pullRequest(number: $${alias}Number) { ...DifflineMine } }`);
     sources.push({ alias, reason: "pinned", kind: "pinned", label: `${key.owner}/${key.name}#${key.number}` });
+    mine = true;
   }
   const header = decls.length ? `query(${decls.join(", ")})` : "query";
   const body = ["viewer { login name }", "rateLimit { remaining resetAt cost }", ...parts].join("\n  ");
-  const query = `${header} {\n  ${body}\n}\n${parts.length ? SUMMARY_FRAGMENT : ""}`;
+  // GraphQL rejects a fragment that isn't used, so DifflineMine goes in only when a part uses it.
+  const query = `${header} {\n  ${body}\n}\n${parts.length ? SUMMARY_FRAGMENT : ""}${mine ? MINE_FRAGMENT : ""}`;
   return { query, variables, sources };
 }
 
@@ -459,6 +503,9 @@ export function countCheckStates(contexts: any): { total: number; failed: number
 function summarizePullRequest(node: any, viewerLogin: string | null, reasons: Reason[]): PullRequestSummary {
   const commit = nodes(node.commits)[0]?.commit;
   const mine = nodes(node.latestOpinionatedReviews).filter((r) => viewerLogin && r.author?.login === viewerLogin);
+  // latestReviews is only in DifflineMine: without it, whether you reviewed (and when) isn't known.
+  const last = node.latestReviews ? viewerLastReviewFrom(nodes(node.latestReviews), viewerLogin) : undefined;
+  const since = sinceReview(last, { headRefOid: node.headRefOid, updatedAt: node.updatedAt });
   return {
     repo: node.repository?.nameWithOwner ?? null,
     number: node.number,
@@ -469,6 +516,8 @@ function summarizePullRequest(node: any, viewerLogin: string | null, reasons: Re
     updatedAt: node.updatedAt ?? null,
     state: node.state ?? null,
     isDraft: Boolean(node.isDraft),
+    mergedAt: node.mergedAt ?? null,
+    closedAt: node.closedAt ?? null,
     baseRefName: node.baseRefName ?? null,
     headRefName: node.headRefName ?? null,
     headRefOid: node.headRefOid ?? null,
@@ -484,6 +533,9 @@ function summarizePullRequest(node: any, viewerLogin: string | null, reasons: Re
     requested: Boolean(viewerLogin) && nodes(node.reviewRequests).some((r) => r.requestedReviewer?.login === viewerLogin),
     own: Boolean(viewerLogin) && node.author?.login === viewerLogin,
     viewerReview: mine.length ? (mine[0].state ?? null) : null,
+    ...(last !== undefined ? { viewerLastReview: last } : {}),
+    ...(since ? { sinceReview: since } : {}),
+    reviewCounts: reviewCounts(nodes(node.latestOpinionatedReviews)),
     latestReviews: nodes(node.latestOpinionatedReviews).map((r) => ({ login: r.author?.login ?? null, state: r.state ?? null })),
     reasons: [...reasons],
   };
@@ -505,12 +557,18 @@ export function mergeSearchResults(data: any, sources: SearchSource[]): { viewer
     reviewed: { shown: 0, total: 0 },
     authored: { shown: 0, total: 0 },
     watched: { shown: 0, total: 0 },
+    closed: { shown: 0, total: 0 },
   };
   const add = (node: any, reason: Reason) => {
     const key = `${String(node.repository.nameWithOwner).toLowerCase()}#${node.number}`;
     const existing = byKey.get(key);
     if (existing) {
       if (!existing.reasons.includes(reason)) existing.reasons.push(reason);
+      // Found first by a search without your review (watched), then by one with it (pinned): take your review.
+      if (existing.viewerLastReview === undefined && node.latestReviews) {
+        const { viewerLastReview, sinceReview } = summarizePullRequest(node, viewer.login, []);
+        Object.assign(existing, { viewerLastReview }, sinceReview ? { sinceReview } : {});
+      }
       return;
     }
     byKey.set(key, summarizePullRequest(node, viewer.login, [reason]));
@@ -536,7 +594,8 @@ const isGitHubTimeout = (err: unknown) => err instanceof GhError && err.kind ===
 
 /**
  * The list in one GraphQL request: review requests (by name and through a team), your own pull requests,
- * watched repositories and pinned pull requests (open or not). Searches are newest-updated first; items keep
+ * watched repositories and pinned pull requests (open or not); or, with `closed`, recently closed ones you reviewed or
+ * wrote (the service asks for those in a request of their own). Searches are newest-updated first; items keep
  * the order they were first found in. reviewDecision isn't fetched (null) and files are empty: see
  * SUMMARY_FRAGMENT and fetchPullRequestFiles. If GitHub times out, the request is sent once more with 20 per
  * search, and `errors` says so.

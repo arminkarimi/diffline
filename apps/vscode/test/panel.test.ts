@@ -165,9 +165,13 @@ test("ReviewPanel: the page's metrics reach the log through the extension, in th
   for (const m of page.sent.slice(before)) webview.receive(m);
   assert.deepEqual(page.sent.slice(before).map((m) => m.type), ["metrics", "metrics", "metrics"]);
   assert.deepEqual(seen, [{ key: "o/r#1", type: "metrics" }, { key: "o/r#1", type: "metrics" }, { key: "o/r#1", type: "metrics" }]);
-  await new Promise((r) => setTimeout(r, 60));
-  const { readFile } = await import("node:fs/promises");
-  const lines = (await readFile(log.file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+  // The panel hands each message on asynchronously; wait until all three are written (read() waits for queued writes).
+  let text = "";
+  for (const until = Date.now() + 2000; Date.now() < until; await new Promise((r) => setTimeout(r, 10))) {
+    text = await log.read();
+    if (text.trim().split("\n").length >= 3) break;
+  }
+  const lines = text.trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines.map((e) => e.action), ["added", "undone", "dismissed"]);
   assert.equal(lines[0].pr, "o/r#1");
   assert.deepEqual(lines[0].agent, { id: "tests", harness: "claude", model: "sonnet", instructions: "0123456789ab" });
@@ -302,4 +306,58 @@ test("ReviewPanel: the page asks for the agent review as Markdown; the extension
   await settle();
   assert.deepEqual(webview.posted.at(-1), { type: "api-result", id: page.sent.at(-1).id, ok: false, error: "o/r#1 has no agent review yet." });
   panel.dispose();
+});
+
+test("ReviewPanel: the open pull request changing on GitHub is told to its page once per change, never from a stale list", async () => {
+  const shownPr = { title: "PR 1", state: "OPEN", headRefOid: "h1", updatedAt: "2026-10-10T12:00:00Z" };
+  let summary: any = { state: "OPEN", headRefOid: "h1", updatedAt: "2026-10-10T12:00:00Z" };
+  const { service } = fakeService(async (key) => ({ data: { head: { sha: "h" }, files: [] }, live: { pr: key.number === 1 ? shownPr : { title: "PR 2" }, threads: [], agent: null } }));
+  (service as any).get = (key: Key) => (key.number === 1 ? { summary } : undefined);
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, () => undefined);
+  await panel.show(A);
+  const webview = fake.created.at(-1)!.webview;
+  const notices = () => webview.posted.filter((m) => m.type === "host-pr-changed");
+
+  assert.equal(panel.noticeChange(A), false, "nothing changed");
+  summary = { state: "OPEN", headRefOid: "h0", updatedAt: "2026-10-10T11:00:00Z" };
+  assert.equal(panel.noticeChange(A), false, "a list fetched before the page doesn't count");
+  summary = { state: "OPEN", headRefOid: "h2", updatedAt: "2026-10-10T12:05:00Z" };
+  assert.equal(panel.noticeChange(B), false, "another pull request");
+  assert.equal(panel.noticeChange(A), true);
+  assert.equal(panel.noticeChange(A), false, "told once");
+  summary = { state: "MERGED", headRefOid: "h2", updatedAt: "2026-10-10T13:00:00Z" };
+  assert.equal(panel.noticeChange(), true);
+  assert.deepEqual(
+    notices().map((m) => [m.key, m.change.kind, m.change.head, m.change.newCommits, m.change.was.head]),
+    [
+      ["o/r#1", "commits", "h2", true, "h1"],
+      ["o/r#1", "merged", "h2", true, "h1"],
+    ],
+  );
+
+  // A reload shows the latest, so there's nothing to tell until it changes again.
+  Object.assign(shownPr, summary);
+  await panel.reload();
+  assert.equal(panel.noticeChange(A), false);
+  panel.dispose();
+  assert.equal(panel.noticeChange(A), false, "no page");
+});
+
+test("hostShim: the page hears host-pr-changed as a diffline-host event", async () => {
+  const { hostShim } = await import("../src/vscode/page.ts");
+  const listeners: Array<(e: { data: unknown }) => void> = [];
+  const events: any[] = [];
+  const window: Record<string, any> = { addEventListener: (_: string, fn: any) => listeners.push(fn), dispatchEvent: (e: any) => events.push(e) };
+  class CustomEvent {
+    type: string;
+    detail: unknown;
+    constructor(type: string, init: { detail: unknown }) {
+      this.type = type;
+      this.detail = init.detail;
+    }
+  }
+  vm.runInNewContext(hostShim("o/r#1"), { window, acquireVsCodeApi: () => ({ postMessage() {} }), CustomEvent });
+  const message = { type: "host-pr-changed", key: "o/r#1", change: { kind: "merged" } };
+  for (const fn of listeners) fn({ data: message });
+  assert.deepEqual(events.map((e) => [e.type, e.detail]), [["diffline-host", message]]);
 });

@@ -11,9 +11,9 @@ import { ensureSampleRepo } from "./fixtures/make-sample-repo.ts";
 
 const SAMPLE = ensureSampleRepo();
 
-function config(over: { pollSeconds?: number; metrics?: boolean } = {}): ServiceConfig {
+function config(over: { pollSeconds?: number; metrics?: boolean; closedDays?: number } = {}): ServiceConfig {
   return {
-    watch: { direct: true, team: false, assigned: false, reviewed: false, codeOwners: false, others: false, authored: true, repositories: [], pollSeconds: over.pollSeconds ?? 60 },
+    watch: { direct: true, team: false, assigned: false, reviewed: false, codeOwners: false, others: false, authored: true, repositories: [], pollSeconds: over.pollSeconds ?? 60, recentlyClosedDays: over.closedDays ?? 0 },
     agents: { autoRun: false, enabled: ["guide"], maxParallel: 1, quietPeriodSeconds: 0, maxAutomaticRuns: 5, skipDrafts: true, timeoutMinutes: 1, autoRunMaxFiles: 100, autoRunMaxLines: 5000 },
     harnesses: { default: "claude", claude: { id: "claude", command: "claude", model: "sonnet", extraArgs: [] }, codex: { id: "codex", command: "codex", model: "", extraArgs: [] }, pi: { id: "pi", command: "pi", model: "", extraArgs: [], thinking: "" } },
     sidebar: { groupBy: "relationship", sortBy: "risk", othersLimit: 10 },
@@ -409,4 +409,93 @@ test("agentReviewMarkdown: lines from the reviewed commit, rebuilt when the pull
   assert.doesNotMatch(lost.markdown, /\]\(https:\/\/github\.com\/acme\/web\/blob\//);
   assert.match(lost.markdown, /\*\*Location\*\*: `src\/checkout\/checkout\.ts` \(the line isn't in the diff/);
   service.dispose();
+});
+
+/** A list node as GitHub returns it for the searches you're in (DifflineMine). */
+function mineNode(number: number, over: Record<string, unknown> = {}) {
+  return {
+    number,
+    title: `Change ${number}`,
+    url: `https://github.com/acme/web/pull/${number}`,
+    createdAt: "2026-10-01T00:00:00Z",
+    updatedAt: "2026-10-05T00:00:00Z",
+    state: "OPEN",
+    isDraft: false,
+    mergedAt: null,
+    closedAt: null,
+    author: { login: "lee" },
+    repository: { nameWithOwner: "acme/web" },
+    baseRefName: "main",
+    headRefName: `change-${number}`,
+    headRefOid: "h1",
+    additions: 1,
+    deletions: 1,
+    changedFiles: 0,
+    reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+    latestOpinionatedReviews: { nodes: [{ author: { login: "sam" }, state: "APPROVED" }] },
+    latestReviews: { nodes: [{ author: { login: "me" }, state: "COMMENTED", submittedAt: "2026-10-04T00:00:00Z", commit: { oid: "h0" } }] },
+    ...over,
+  };
+}
+
+test("refresh: recently closed pull requests come from a request of their own, keep their row, and changes are announced", async () => {
+  let open: any[] = [mineNode(1)];
+  let closed: any[] | Error = [mineNode(2, { state: "MERGED", mergedAt: "2026-10-06T00:00:00Z", closedAt: "2026-10-06T00:00:00Z", updatedAt: "2026-10-06T00:00:00Z", reviewRequests: { nodes: [] } })];
+  const queries: string[] = [];
+  setGhRunner(async (args) => {
+    const query = args.find((a) => a.startsWith("query=")) || "";
+    // Preparing #1's diff ahead of time asks for its detail; not part of this test.
+    if (query.includes("pullRequest(number: $number)")) return { code: 1, stdout: "", stderr: "HTTP 404: Not Found", killed: false };
+    queries.push(query.includes("closedReviewed: search") ? "closed" : "main");
+    if (query.includes("closedReviewed: search")) {
+      assert.ok(args.some((a) => /^closedReviewed=is:pr is:closed reviewed-by:@me -author:@me closed:>=\d{4}-\d\d-\d\d /.test(a)));
+      assert.doesNotMatch(query, /direct: search/, "the open searches aren't in it");
+      if (closed instanceof Error) return { code: 1, stdout: "", stderr: "HTTP 502: Bad Gateway", killed: false };
+      const data = { viewer: { login: "me", name: null }, closedReviewed: { issueCount: 5, nodes: closed }, closedAuthored: { issueCount: 0, nodes: [] } };
+      return { code: 0, stdout: JSON.stringify({ data }), stderr: "", killed: false };
+    }
+    assert.doesNotMatch(query, /closedReviewed/);
+    const data = { viewer: { login: "me", name: null }, direct: { issueCount: open.length, nodes: open }, authored: { issueCount: 0, nodes: [] } };
+    return { code: 0, stdout: JSON.stringify({ data }), stderr: "", killed: false };
+  });
+  const service = await makeService({ config: () => config({ closedDays: 7 }), repos: { reset() {}, async cleanTrees() {}, resolve: async () => Promise.reject(new Error("no clone")) } });
+  const moved: string[] = [];
+  service.on("pullRequestChanged", (key: { number: number }) => moved.push(`#${key.number}`));
+  try {
+    await service.refresh();
+    assert.deepEqual(queries.sort(), ["closed", "main"], "two requests, sent together");
+    queries.length = 0;
+    assert.deepEqual((await service.pageGroups()).map((g) => [g.id, g.keys]), [["requested", ["acme/web#1"]], ["closed", ["acme/web#2"]]]);
+    assert.deepEqual(service.totals.closed, { shown: 1, total: 5 });
+    const items = await service.listItems();
+    const one = items.find((i) => i.number === 1)!;
+    assert.deepEqual(one.viewerLastReview, { state: "COMMENTED", at: "2026-10-04T00:00:00Z", commit: "h0" });
+    assert.deepEqual(one.sinceReview, { newCommits: true, updated: true });
+    assert.deepEqual(one.reviewCounts, { approvals: 1, changesRequested: 0 });
+    assert.deepEqual([one.requested, one.updatedAt, one.headRefOid, one.mergedAt], [true, "2026-10-05T00:00:00Z", "h1", null]);
+    const two = items.find((i) => i.number === 2)!;
+    assert.deepEqual([two.state, two.mergedAt, two.closedAt], ["MERGED", "2026-10-06T00:00:00Z", "2026-10-06T00:00:00Z"]);
+    assert.deepEqual(moved, []);
+
+    // A push to #1: announced once; #2 didn't change.
+    open = [mineNode(1, { headRefOid: "h2", updatedAt: "2026-10-07T00:00:00Z" })];
+    await service.refresh();
+    assert.deepEqual(moved, ["#1"]);
+
+    // #1 is merged: it leaves the open search and keeps its row from the closed one.
+    open = [];
+    closed = [mineNode(1, { state: "MERGED", headRefOid: "h2", updatedAt: "2026-10-08T00:00:00Z", reviewRequests: { nodes: [] } }), ...(closed as any[])];
+    await service.refresh();
+    assert.deepEqual(moved, ["#1", "#1"]);
+    assert.deepEqual((await service.pageGroups()).map((g) => [g.id, g.keys]), [["closed", ["acme/web#1", "acme/web#2"]]]);
+
+    // A failed closed search keeps the last ones found.
+    closed = new Error("down");
+    await service.refresh();
+    assert.equal(service.get({ owner: "acme", name: "web", number: 2 })?.summary?.state, "MERGED");
+    assert.equal(service.lastError, null, "the main list still loaded");
+  } finally {
+    service.dispose();
+    setGhRunner(null);
+  }
 });

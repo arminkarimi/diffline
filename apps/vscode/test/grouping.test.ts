@@ -81,3 +81,34 @@ test("buildGroups: by repository, each row tagged with why it's listed; others s
   assert.deepEqual(groups[1].rows.map((r) => r.tag), ["code owner", "requested"]);
   assert.equal(groups[0].description, "o · 1");
 });
+
+test("buildGroups: merged and closed pull requests go last, in Recently merged or closed, newest update first", async () => {
+  const { buildGroups } = await import("../src/core/grouping.ts");
+  const row = (n: number, reasons: string[], state: string, updatedAt: string, pinned = false) => {
+    const record = rec(reasons, { updatedAt, pinned });
+    (record as any).key = { owner: "o", name: "r", number: n };
+    (record as any).summary.state = state;
+    return { record, risk: { score: n } };
+  };
+  const rows = [
+    row(1, ["review-requested"], "OPEN", "2026-10-05T00:00:00Z"),
+    row(2, ["recently-closed"], "MERGED", "2026-10-04T00:00:00Z"),
+    row(3, ["recently-closed"], "CLOSED", "2026-10-06T00:00:00Z"),
+    row(4, [], "MERGED", "2026-10-01T00:00:00Z", true), // opened here, merged since
+    row(5, ["other"], "OPEN", "2026-10-05T00:00:00Z"),
+  ];
+  const groups = buildGroups(rows, { groupBy: "relationship", sortBy: "risk", othersLimit: 10 }, { closed: { shown: 2, total: 9 } });
+  assert.deepEqual(groups.map((g) => g.id), ["requested", "others", "closed"]);
+  const closed = groups.at(-1)!;
+  assert.equal(closed.label, "Recently merged or closed");
+  assert.deepEqual(closed.rows.map((r) => r.record.key.number), [3, 2, 4]);
+  assert.equal(closed.description, "3 of 9");
+  assert.equal(closed.collapsed, false, "folded only when long");
+  assert.equal(relationshipOf(rows[3].record)?.id, "closed", "a merged pull request opened here");
+
+  // By repository they stay in their repository, tagged with why they're listed.
+  const byRepo = buildGroups(rows, { groupBy: "repository", sortBy: "risk", othersLimit: 10 });
+  assert.deepEqual(byRepo.map((g) => g.id), ["repo:o/r", "others"]);
+  assert.deepEqual(byRepo[0].rows.map((r) => r.record.key.number), [4, 3, 2, 1]);
+  assert.deepEqual(byRepo[0].rows.map((r) => (r as { tag?: string }).tag), [undefined, undefined, undefined, "requested"]);
+});

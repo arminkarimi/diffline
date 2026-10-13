@@ -43,6 +43,7 @@ function readConfig(): ServiceConfig {
       authored: c.get<boolean>("watch.authored", true),
       repositories: c.get<string[]>("watch.repositories", []),
       pollSeconds: c.get<number>("watch.pollSeconds", 60),
+      recentlyClosedDays: c.get<number>("watch.recentlyClosedDays", 7),
     },
     agents: {
       autoRun: c.get<boolean>("agents.autoRun", true),
@@ -139,6 +140,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     if (choice === "Choose harnesses") void vscode.commands.executeCommand("diffline.selectHarness");
     if (choice === "Show log") output.show(true);
   });
+
+  // The open pull request was merged, closed, pushed to or updated on GitHub: the page offers a refresh.
+  service.on("pullRequestChanged", (key: PrKey) => panel.noticeChange(key));
 
   service.on("runElsewhere", (key: PrKey) => {
     void vscode.window.showInformationMessage(`Agents are already running on #${key.number} in another VS Code window.`);
@@ -461,7 +465,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     const current = readSidebar().groupBy;
     const pick = await vscode.window.showQuickPick(
       [
-        { label: "By relationship", description: current === "relationship" ? "current" : "", detail: "Requested from you, assigned, code owner, your teams, yours, watched", value: "relationship" },
+        { label: "By relationship", description: current === "relationship" ? "current" : "", detail: "Requested from you, assigned, code owner, your teams, yours, watched, recently merged or closed", value: "relationship" },
         { label: "By repository", description: current === "repository" ? "current" : "", detail: "One group per repository; each row says why it's listed", value: "repository" },
       ],
       { title: "Group pull requests" },

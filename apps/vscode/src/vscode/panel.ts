@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import * as vscode from "vscode";
 
+import { prChange, type PrSnapshot } from "../core/review-status.ts";
 import { parseKey, type DifflineService } from "../core/service.ts";
 import type { PrKey } from "../core/types.ts";
 import { prKeyString } from "../core/types.ts";
@@ -63,6 +64,9 @@ export class ReviewPanel {
   /** The load whose review page is on screen; differs from loadSeq while a load runs, or when a message is shown. */
   private shownSeq = -1;
   private template: string | null = null;
+  /** The pull request as the page on screen shows it, and the last change the page was told about. */
+  private shownPr: PrSnapshot | null = null;
+  private noticed: string | null = null;
   private readonly extensionUri: vscode.Uri;
   private readonly service: DifflineService;
   private readonly log: (line: string) => void;
@@ -98,6 +102,7 @@ export class ReviewPanel {
       this.panel = null;
       this.current = null;
       this.shownSeq = -1;
+      this.shownPr = null;
     });
     panel.webview.onDidReceiveMessage((m) => void this.onMessage(m));
     this.panel = panel;
@@ -196,6 +201,7 @@ export class ReviewPanel {
       if (stale()) return;
       panel.webview.html = html;
       this.shownSeq = seq;
+      this.shown(first.live.pr);
       this.log(`Opened ${prKeyString(key)} in ${Date.now() - started} ms${cached ? " (from cache)" : ""}`);
       if (!cached) return;
       const fresh = await this.service.loadReview(key, { home, ...(view ? { view } : {}) });
@@ -205,6 +211,7 @@ export class ReviewPanel {
         const html = await this.page(key, fresh.data, fresh.live);
         if (stale()) return;
         panel.webview.html = html;
+        this.shown(fresh.live.pr);
         this.log(`Updated ${prKeyString(key)} with the latest from GitHub`);
       }
     } catch (err) {
@@ -214,6 +221,29 @@ export class ReviewPanel {
       if (stale() || this.shownSeq === seq) return;
       panel.webview.html = this.message(`This pull request didn't load. ${message}`, false);
     }
+  }
+
+  /** A new page is on screen: remember what it shows, so later changes on GitHub can be told apart. */
+  private shown(pr: PrSnapshot | null | undefined): void {
+    this.shownPr = pr ? { state: pr.state ?? null, headRefOid: pr.headRefOid ?? null, updatedAt: pr.updatedAt ?? null } : null;
+    this.noticed = null;
+  }
+
+  /**
+   * The list's refresh saw a pull request change on GitHub (the service's "pullRequestChanged"). When it's the one on
+   * screen and it changed since the page was built, tell the page ("host-pr-changed") so it can offer a refresh; the
+   * page isn't reloaded, so the reader keeps their place. Each change is told once. Returns whether a message went.
+   */
+  noticeChange(key?: PrKey): boolean {
+    if (!this.panel || !this.current || this.shownSeq !== this.loadSeq || !this.shownPr) return false;
+    if (key && prKeyString(key).toLowerCase() !== prKeyString(this.current).toLowerCase()) return false;
+    const change = prChange(this.shownPr, this.service.get(this.current)?.summary);
+    if (!change) return false;
+    const id = `${change.state}|${change.head}|${change.updatedAt}`;
+    if (id === this.noticed) return false;
+    this.noticed = id;
+    void this.panel.webview.postMessage({ type: "host-pr-changed", key: prKeyString(this.current), change });
+    return true;
   }
 
   /** Reload the current pull request, keeping the panel. */

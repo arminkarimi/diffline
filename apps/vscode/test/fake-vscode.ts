@@ -1,4 +1,5 @@
-// Just enough of the vscode module for ReviewPanel, so panel tests run without VS Code. panel.test.ts maps "vscode" here.
+// Just enough of the vscode module for ReviewPanel and the sidebar tree, so their tests run without VS Code. panel.test.ts
+// and tree.test.ts map "vscode" here.
 
 import path from "node:path";
 
@@ -76,3 +77,60 @@ export const env = {
 export const commands = {
   executeCommand: async (...args: unknown[]) => void executed.push(args),
 };
+
+/* The sidebar tree (tree.test.ts). */
+
+export const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
+export class TreeItem {
+  description?: string;
+  tooltip?: unknown;
+  id?: string;
+  iconPath?: unknown;
+  contextValue?: string;
+  command?: unknown;
+  label: string;
+  collapsibleState: number;
+  constructor(label: string, collapsibleState: number) {
+    this.label = label;
+    this.collapsibleState = collapsibleState;
+  }
+}
+export class ThemeColor {
+  id: string;
+  constructor(id: string) {
+    this.id = id;
+  }
+}
+export class ThemeIcon {
+  id: string;
+  color?: ThemeColor;
+  constructor(id: string, color?: ThemeColor) {
+    this.id = id;
+    this.color = color;
+  }
+}
+/** Markdown as one string; appendText escapes Markdown the way VS Code does (roughly). */
+export class MarkdownString {
+  value = "";
+  appendMarkdown(s: string) {
+    this.value += s;
+    return this;
+  }
+  appendText(s: string) {
+    this.value += s.replace(/[\\`*_{}[\]()#+\-.!|<>]/g, "\\$&");
+    return this;
+  }
+}
+export class EventEmitter<T> {
+  private listeners: Array<Listener<T>> = [];
+  readonly event = (fn: Listener<T>) => {
+    this.listeners.push(fn);
+    return { dispose: () => undefined };
+  };
+  fire(value: T) {
+    for (const fn of this.listeners) fn(value);
+  }
+  dispose() {
+    this.listeners = [];
+  }
+}

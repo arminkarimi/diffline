@@ -36,6 +36,11 @@ exports.run = async () => {
   const rows = api.service.all().filter((r) => r.summary);
   step(`refresh listed ${rows.length} pull requests in ${Date.now() - t} ms (viewer ${api.service.viewer && api.service.viewer.login}, error ${api.service.lastError})`);
   assert.ok(rows.length > 0, "the list has pull requests");
+  // Your review is known on rows from the searches you're in; recently merged or closed ones keep their rows.
+  const known = rows.filter((r) => r.summary.viewerLastReview !== undefined).length;
+  const reviewedRows = rows.filter((r) => r.summary.viewerLastReview).length;
+  const closedRows = rows.filter((r) => r.summary.state === "MERGED" || r.summary.state === "CLOSED").length;
+  step(`your review known on ${known} rows (${reviewedRows} reviewed by you), ${closedRows} merged or closed, ${api.service.totals.closed ? api.service.totals.closed.total : 0} closed recently in all`);
   assert.equal(api.service.all().filter((r) => ["queued", "running"].includes(r.run.state)).length, 0, "no agents ran (autoRun is off)");
 
   t = Date.now();
@@ -47,6 +52,9 @@ exports.run = async () => {
   assert.match(html, /window\.DIFFLINE_HOST/);
   assert.match(html, /nonce-/);
   assert.ok(!html.includes('src="review-data.js"'), "the data script was replaced");
+  assert.match(html, /host-pr-changed/, "the page hears when its pull request changes on GitHub");
+  assert.match(html, /"mergedAt":/, "the page gets merged and closed times");
+  step(`notice for the open pull request after opening it: ${api.panel.noticeChange() ? "sent" : "none (nothing changed)"}`);
 
   t = Date.now();
   await vscode.commands.executeCommand("diffline.open", PR);

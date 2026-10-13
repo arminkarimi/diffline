@@ -4,6 +4,7 @@ import {
   GhError,
   buildSearchQuery,
   classifyGhError,
+  closedSince,
   countCheckStates,
   countChecks,
   fetchPullRequest,
@@ -54,6 +55,10 @@ function prFixture() {
         state: "OPEN",
         isDraft: false,
         createdAt: "2026-10-01T10:00:00Z",
+        updatedAt: "2026-10-05T08:00:00Z",
+        mergedAt: null,
+        closedAt: null,
+        mergedBy: null,
         author: user("dana", "Dana P"),
         baseRefName: "main",
         headRefName: "dana/risk",
@@ -152,7 +157,9 @@ test("normalizePullRequest matches normalize_github", () => {
   assert.deepEqual(pr.reviews[3].login, null);
 
   // The viewer's latest submitted review, not anyone else's and not the pending one.
-  assert.deepEqual(pr.lastReview, { submittedAt: "2026-10-03T08:00:00Z", commit: "c2" });
+  assert.deepEqual(pr.lastReview, { submittedAt: "2026-10-03T08:00:00Z", commit: "c2", state: "COMMENTED" });
+  assert.equal(pr.updatedAt, "2026-10-05T08:00:00Z");
+  assert.deepEqual([pr.mergedAt, pr.mergedBy, pr.closedAt], [null, null, null]);
 
   assert.deepEqual(pr.viewedFiles, ["src/risk.ts"]);
   assert.deepEqual(pr.comments, [{ login: "dana", name: "Dana P", body: "ping", createdAt: "2026-10-02T00:00:00Z", url: "https://x/c1" }]);
@@ -180,7 +187,7 @@ test("normalizePullRequest matches normalize_github", () => {
 
   // The key order is part of the page's format, so JSON output stays the same.
   assert.deepEqual(Object.keys(pr), [
-    "title", "body", "url", "state", "isDraft", "createdAt", "author", "baseRefName", "headRefName", "baseRefOid", "headRefOid",
+    "title", "body", "url", "state", "isDraft", "createdAt", "updatedAt", "mergedAt", "mergedBy", "closedAt", "author", "baseRefName", "headRefName", "baseRefOid", "headRefOid",
     "defaultBranch", "reviewDecision", "mergeStateStatus", "labels", "reviewRequests", "latestReviews", "reviews", "comments",
     "viewedFiles", "checks", "lastReview",
   ]);
@@ -346,6 +353,7 @@ test("mergeSearchResults dedupes across searches, keeps every reason and counts 
     reviewed: { shown: 0, total: 0 },
     authored: { shown: 1, total: 1 },
     watched: { shown: 3, total: 80 },
+    closed: { shown: 0, total: 0 },
   });
   const first = items[0];
   assert.equal(first.requested, true);
@@ -369,7 +377,87 @@ test("mergeSearchResults dedupes across searches, keeps every reason and counts 
 test("mergeSearchResults: searches that didn't run count as 0 of 0", () => {
   const { sources } = buildSearchQuery({ direct: true, team: false, authored: false, repositories: [], pinned: [] });
   const { totals } = mergeSearchResults({ viewer: { login: "armin" }, direct: { issueCount: 2, nodes: [summaryNode("o/n", 1)] } }, sources);
-  assert.deepEqual(totals, { direct: { shown: 1, total: 2 }, team: { shown: 0, total: 0 }, assigned: { shown: 0, total: 0 }, reviewed: { shown: 0, total: 0 }, authored: { shown: 0, total: 0 }, watched: { shown: 0, total: 0 } });
+  assert.deepEqual(totals, { direct: { shown: 1, total: 2 }, team: { shown: 0, total: 0 }, assigned: { shown: 0, total: 0 }, reviewed: { shown: 0, total: 0 }, authored: { shown: 0, total: 0 }, watched: { shown: 0, total: 0 }, closed: { shown: 0, total: 0 } });
+});
+
+test("buildSearchQuery: your latest review only in the searches you're in; team and watched stay lean", () => {
+  const { query } = buildSearchQuery({ ...ALL, assigned: true, reviewed: true, repositories: ["Acme/web"], pinned: [KEY] });
+  for (const alias of ["direct", "assigned", "reviewed", "authored"]) assert.match(query, new RegExp(`${alias}: search\\([^\\n]*\\.\\.\\.DifflineMine`));
+  assert.match(query, /team: search\([^\n]*\.\.\.DifflineSummary \}/);
+  assert.match(query, /watched0: search\([^\n]*\.\.\.DifflineSummary \}/);
+  assert.match(query, /pinned0: [^\n]*\.\.\.DifflineMine/);
+  assert.match(query, /fragment DifflineMine on PullRequest \{\n  \.\.\.DifflineSummary\n  latestReviews\(first: 30\) \{ nodes \{ author \{ login \} state submittedAt commit \{ oid \} \} \}/);
+  assert.match(query, /latestOpinionatedReviews\(first: 30\)/, "approvals still come from opinionated reviews");
+  assert.match(query, /mergedAt closedAt/);
+  // GraphQL rejects unused fragments: team and watched alone don't send DifflineMine.
+  assert.doesNotMatch(buildSearchQuery({ direct: false, team: true, authored: false, repositories: ["Acme/web"], pinned: [] }).query, /DifflineMine/);
+});
+
+test("buildSearchQuery: recently closed pull requests you reviewed or wrote, since a date, 20 each", () => {
+  const now = new Date("2026-10-13T09:00:00Z");
+  assert.equal(closedSince(7, now), "2026-10-06");
+  const { query, variables, sources } = buildSearchQuery({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days: 7, authored: true } }, 50, now);
+  assert.deepEqual(sources.map((s) => [s.alias, s.reason, s.search]), [
+    ["closedReviewed", "recently-closed", "closed"],
+    ["closedAuthored", "recently-closed", "closed"],
+  ]);
+  assert.equal(variables.closedReviewed, "is:pr is:closed reviewed-by:@me -author:@me closed:>=2026-10-06 archived:false sort:updated-desc");
+  assert.equal(variables.closedAuthored, "is:pr is:closed author:@me closed:>=2026-10-06 archived:false sort:updated-desc");
+  assert.match(query, /closedReviewed: search\(type: ISSUE, query: \$closedReviewed, first: 20\) \{ issueCount nodes \{ \.\.\.DifflineMine/);
+  assert.equal(buildSearchQuery({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days: 7, authored: false } }, 50, now).sources.length, 1, "yours only when your own pull requests are listed");
+  assert.equal(buildSearchQuery({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days: 0, authored: true } }).sources.length, 0, "0 days turns it off");
+  assert.match(buildSearchQuery({ direct: false, team: false, authored: false, repositories: [], pinned: [], closed: { days: 3, authored: false } }, 10, now).query, /first: 10\)/, "the timeout retry's smaller pages apply");
+});
+
+test("mergeSearchResults: your latest review of any state, what changed since, approvals, merged and closed times", () => {
+  const { sources } = buildSearchQuery({ ...ALL, team: false, reviewed: true, repositories: ["Acme/web"], pinned: [{ owner: "Acme", name: "web", number: 6 }] });
+  const reviews = (...nodes: unknown[]) => ({ latestReviews: { nodes } });
+  const data = {
+    viewer: { login: "armin", name: "Armin" },
+    direct: {
+      issueCount: 3,
+      nodes: [
+        // Approved, then replied to a thread (a comment review) on an older head; GitHub changed since.
+        summaryNode("Acme/web", 1, {
+          updatedAt: "2026-10-09T00:00:00Z",
+          latestOpinionatedReviews: { nodes: [{ author: { login: "armin" }, state: "APPROVED" }, { author: { login: "lee" }, state: "APPROVED" }, { author: { login: "sam" }, state: "CHANGES_REQUESTED" }] },
+          ...reviews({ author: { login: "lee" }, state: "APPROVED", submittedAt: "2026-10-08T00:00:00Z", commit: { oid: HEAD } }, { author: { login: "armin" }, state: "COMMENTED", submittedAt: "2026-10-07T00:00:00Z", commit: { oid: "old" } }),
+        }),
+        // Dismissed, with no commit; nothing since.
+        summaryNode("Acme/web", 2, {
+          updatedAt: "2026-10-07T00:00:30Z",
+          latestOpinionatedReviews: { nodes: [{ author: { login: "armin" }, state: "DISMISSED" }] },
+          ...reviews({ author: { login: "armin" }, state: "DISMISSED", submittedAt: "2026-10-07T00:00:00Z", commit: null }),
+        }),
+        // Reviewers, but not you.
+        summaryNode("Acme/web", 3, reviews({ author: { login: "lee" }, state: "COMMENTED", submittedAt: "2026-10-07T00:00:00Z", commit: { oid: HEAD } })),
+      ],
+    },
+    reviewed: { issueCount: 0, nodes: [] },
+    authored: { issueCount: 0, nodes: [] },
+    // Watched repositories don't ask for reviews; the same pull request pinned does.
+    watched0: { issueCount: 2, nodes: [summaryNode("Acme/web", 5), summaryNode("Acme/web", 6)] },
+    pinned0: { pullRequest: summaryNode("Acme/web", 6, { state: "MERGED", mergedAt: "2026-10-08T00:00:00Z", closedAt: "2026-10-08T00:00:00Z", ...reviews({ author: { login: "armin" }, state: "APPROVED", submittedAt: "2026-10-06T00:00:00Z", commit: { oid: HEAD } }) }) },
+  };
+  const { items } = mergeSearchResults(data, sources);
+  const by = new Map(items.map((i) => [i.number, i]));
+  const one = by.get(1)!;
+  assert.equal(one.viewerReview, "APPROVED", "your approval still stands");
+  assert.deepEqual(one.viewerLastReview, { state: "COMMENTED", at: "2026-10-07T00:00:00Z", commit: "old" });
+  assert.deepEqual(one.sinceReview, { newCommits: true, updated: true });
+  assert.deepEqual(one.reviewCounts, { approvals: 2, changesRequested: 1 });
+  assert.deepEqual([one.mergedAt, one.closedAt], [null, null]);
+  const two = by.get(2)!;
+  assert.deepEqual(two.viewerLastReview, { state: "DISMISSED", at: "2026-10-07T00:00:00Z", commit: null });
+  assert.deepEqual(two.sinceReview, { newCommits: false, updated: false });
+  assert.deepEqual(two.reviewCounts, { approvals: 0, changesRequested: 0 });
+  assert.equal(by.get(3)!.viewerLastReview, null, "fetched, and you haven't reviewed it");
+  assert.equal(by.get(3)!.sinceReview, undefined);
+  assert.equal("viewerLastReview" in by.get(5)!, false, "a watched repository's search doesn't know");
+  const six = by.get(6)!;
+  assert.deepEqual(six.reasons, ["watched", "pinned"]);
+  assert.equal(six.state, "OPEN", "the first sighting wins");
+  assert.deepEqual(six.viewerLastReview, { state: "APPROVED", at: "2026-10-06T00:00:00Z", commit: HEAD }, "but your review comes from the pinned lookup");
 });
 
 test("searchPullRequests: one call; a missing pinned pull request doesn't sink the list", async () => {

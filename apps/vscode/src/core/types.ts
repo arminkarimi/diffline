@@ -116,6 +116,12 @@ export interface PullRequest {
   state: string;
   isDraft: boolean;
   createdAt: string;
+  /** When anything on GitHub last changed, so the extension can tell the page about changes since it was built. */
+  updatedAt: string | null;
+  /** Set once merged or closed (a merged pull request has both). */
+  mergedAt: string | null;
+  mergedBy: Person | null;
+  closedAt: string | null;
   author: Person;
   baseRefName: string;
   headRefName: string;
@@ -131,13 +137,23 @@ export interface PullRequest {
   comments: Array<Person & { body: string; createdAt: string; url: string }>;
   viewedFiles: string[];
   checks: Check[];
-  lastReview: { submittedAt: string; commit: string | null } | null;
+  /** The viewer's newest submitted review of any state (state missing in pages saved by older versions). */
+  lastReview: { submittedAt: string; commit: string | null; state?: ViewerLastReview["state"] } | null;
 }
 
 export interface PullRequestDetail {
   viewer: Person;
   pr: PullRequest;
   threads: Thread[];
+}
+
+/** The viewer's latest submitted review of a pull request (a reply to a review thread is a COMMENTED review). */
+export interface ViewerLastReview {
+  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED";
+  /** submittedAt */
+  at: string;
+  /** The commit the review was on; null when GitHub doesn't say. */
+  commit: string | null;
 }
 
 /** A pull request in the list: cheap to fetch for many at once (one GraphQL search). */
@@ -151,6 +167,9 @@ export interface PullRequestSummary {
   updatedAt: string;
   state: string;
   isDraft: boolean;
+  /** Set once merged or closed. Missing in lists saved by older versions. */
+  mergedAt?: string | null;
+  closedAt?: string | null;
   baseRefName: string;
   headRefName: string;
   headRefOid: string;
@@ -164,15 +183,27 @@ export interface PullRequestSummary {
   checks: { total: number; failed: number; running: number };
   requested: boolean;
   own: boolean;
+  /** Your latest approval or change request (latestOpinionatedReviews): APPROVED, CHANGES_REQUESTED or DISMISSED. */
   viewerReview: string | null;
+  /**
+   * Your latest review of any state, with when and on which commit. null: you haven't reviewed it. Missing: not fetched,
+   * because only the searches you're involved in ask for it (review requests, assigned, reviewed, yours, opened here,
+   * recently closed); team requests, watched repositories and others leave it out to keep those searches fast.
+   */
+  viewerLastReview?: ViewerLastReview | null;
+  /** What changed since viewerLastReview (review-status.ts sinceReview). Missing when there's no review to compare. */
+  sinceReview?: { newCommits: boolean; updated: boolean };
+  /** Approvals and change requests among reviewers' latest opinionated reviews; the list has no reviewDecision. */
+  reviewCounts?: { approvals: number; changesRequested: number };
   /** Each reviewer's latest approval or change request (latestOpinionatedReviews). Missing in lists saved by older versions. */
   latestReviews?: Array<{ login: string | null; state: string | null }>;
   /**
    * Why it's listed. "code-owner" (you or your team own changed files) is added after the search, from CODEOWNERS;
    * "other" is an open pull request in one of your repositories that nobody asked you to review. "reviewed": open,
-   * not yours, and you've reviewed it (GitHub drops you from the requested reviewers once you do).
+   * not yours, and you've reviewed it (GitHub drops you from the requested reviewers once you do). "recently-closed":
+   * merged or closed in the last diffline.watch.recentlyClosedDays days, and you reviewed it or wrote it.
    */
-  reasons: Array<"review-requested" | "team-requested" | "assigned" | "reviewed" | "code-owner" | "authored" | "watched" | "pinned" | "other">;
+  reasons: Array<"review-requested" | "team-requested" | "assigned" | "reviewed" | "code-owner" | "authored" | "watched" | "pinned" | "recently-closed" | "other">;
 }
 
 /* ---------- Agent review: agents/<owner>__<repo>__<pr>.json in the extension's storage (store.ts) ---------- */
@@ -322,6 +353,11 @@ export interface ListItem {
   createdAt: string | null;
   state: string | null;
   isDraft: boolean | null;
+  /** Set once merged or closed. */
+  mergedAt: string | null;
+  closedAt: string | null;
+  updatedAt: string | null;
+  headRefOid: string | null;
   baseRefName: string | null;
   headRefName: string | null;
   defaultBranch: string | null;
@@ -337,8 +373,16 @@ export interface ListItem {
   checks: { total: number; failed: number; running: number };
   agent: { findings: number; openHigh: number; open: number } | null;
   description: { kind: string; gaps: number; rules: number } | null;
+  /** Your review is requested by name. With viewerLastReview set, it's requested again. */
   requested: boolean;
+  /** Your latest approval or change request (APPROVED, CHANGES_REQUESTED or DISMISSED), as before. */
   viewerReview: string | null;
+  /** Your latest review of any state; null when you haven't reviewed it or the list doesn't know (see PullRequestSummary). */
+  viewerLastReview: ViewerLastReview | null;
+  /** What changed since viewerLastReview; null without one. */
+  sinceReview: { newCommits: boolean; updated: boolean } | null;
+  /** Approvals and change requests, for when reviewDecision isn't known (the list doesn't fetch it). */
+  reviewCounts: { approvals: number; changesRequested: number };
   own: boolean;
   stackedOnPr?: number;
   riskInput: RiskInput;
