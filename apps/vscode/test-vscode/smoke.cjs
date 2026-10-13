@@ -40,7 +40,8 @@ exports.run = async () => {
   const known = rows.filter((r) => r.summary.viewerLastReview !== undefined).length;
   const reviewedRows = rows.filter((r) => r.summary.viewerLastReview).length;
   const closedRows = rows.filter((r) => r.summary.state === "MERGED" || r.summary.state === "CLOSED").length;
-  step(`your review known on ${known} rows (${reviewedRows} reviewed by you), ${closedRows} merged or closed, ${api.service.totals.closed ? api.service.totals.closed.total : 0} closed recently in all`);
+  // Recently merged or closed ones come from their own search, which answers after the main list shows.
+  step(`your review known on ${known} rows (${reviewedRows} reviewed by you); when the main list showed: ${closedRows} merged or closed rows, ${api.service.totals.closed ? api.service.totals.closed.total : 0} closed recently counted so far`);
   assert.equal(api.service.all().filter((r) => ["queued", "running"].includes(r.run.state)).length, 0, "no agents ran (autoRun is off)");
 
   t = Date.now();

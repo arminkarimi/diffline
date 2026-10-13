@@ -41,7 +41,7 @@ The extension activates on `onStartupFinished` (`package.json`). `activate()` in
 4. Writes the default agent settings to `~/.diffline` on first run (`ensureSettings` in `src/agents/settings.ts`).
 5. Calls `service.start()`, which cleans up review checkouts left by windows that closed mid-run, refreshes from GitHub, and starts the timers.
 
-Settings changes go to `service.configChanged()`. Changes to what's watched, the agents or clones also trigger a refresh. Grouping and sorting changes only redraw.
+Settings changes go to `service.configChanged()`. Changes to the agents or clones also trigger a refresh, and changes to what's watched (`diffline.watch.*`) a full one, background searches included (see [Background searches](#background-searches)). Grouping and sorting changes only redraw.
 
 ## DifflineService
 
@@ -49,20 +49,27 @@ Settings changes go to `service.configChanged()`. Changes to what's watched, the
 
 ### Polling GitHub
 
-Every `diffline.watch.pollSeconds` (60 by default, at least 15), `refresh()` runs one GraphQL search through `gh` (`searchPullRequests` in `src/core/github.ts`). It covers review requests to you by name, assignments, pull requests you reviewed, your own, watched repositories, and ones you opened by hand. Concurrent refreshes share one request. The last list is saved in `globalState`, so it shows at once on the next start.
+Every `diffline.watch.pollSeconds` (60 by default, at least 15), `refresh()` runs one GraphQL search through `gh` (`searchPullRequests` in `src/core/github.ts`). It covers review requests to you by name, assignments, pull requests you reviewed, your own, watched repositories, and ones you opened by hand. Concurrent refreshes share one request. The list shows as soon as it answers, and `refresh()` resolves then: the other parts of the list run on their own schedule (below). The last list and its group counts are saved in `globalState`, so they show at once on the next start, background groups included.
 
 Each pull request comes back as a summary (`SUMMARY_FRAGMENT`): state, draft, dates (`updatedAt`, `mergedAt`, `closedAt`), head, mergeability, requested reviewers, check counts, and `latestOpinionatedReviews` (each reviewer's latest approval or change request), from which the summary takes `viewerReview` and the approval counts. GitHub stops a query at about 10 seconds, so the list leaves out what's slow to compute: `reviewDecision` isn't fetched, and the viewer's latest review of any state, with its time and commit, is fetched only in the searches the viewer is involved in (review requested, assigned, reviewed, authored, opened by hand, recently closed), through a second fragment, `DifflineMine`, that adds `latestReviews`. Team requests and watched repositories are the large searches, so they stay on the plain fragment: measured on 50 pull requests, `latestReviews` added about 0.6 to 2 seconds to a search. From the viewer's review, `sinceReview()` in `src/core/review-status.ts` derives `newCommits` (the head isn't the commit reviewed) and `updated` (`updatedAt` more than a minute after the review: comments, reviews or the description changed). Where the review isn't fetched, `viewerLastReview` is missing and rows fall back to `viewerReview`.
 
-**Recently merged or closed.** With `diffline.watch.recentlyClosedDays` above 0 (7 by default), `searchClosed()` runs two more searches, up to 20 pull requests each: closed ones you reviewed and, with `diffline.watch.authored`, ones you wrote, closed within those days. They go as a request of their own, in parallel with the main search: inside it they made it about twice as slow, so the list waits about as long as before. A failed closed search keeps the last ones found. Their rows go in the last group, **Recently merged or closed**, and their changed files aren't fetched.
+**Recently merged or closed.** With `diffline.watch.recentlyClosedDays` above 0 (3 by default), `searchClosed()` runs two more searches, up to 20 pull requests each: closed ones you reviewed and, with `diffline.watch.authored`, ones you wrote, closed within those days. They go as a request of their own (`refreshClosed()`), because inside the main search they made it about twice as slow, and the list doesn't wait for it. It's sent after the main search's list shows at start, then every 10 minutes, and right away when a pull request leaves the main search. Such a pull request may have just merged, so it keeps its row until the closed search says whether it merged or closed; then it moves under **Recently merged or closed** or goes. When the search answers, `applyClosed()` merges its rows into the list and the list changes; one the main search also found (pinned, say) keeps both reasons. A failed closed search keeps the last ones found. Their rows go in the last group, **Recently merged or closed**, and their changed files aren't fetched.
 
 Pull requests that leave every search are dropped, unless they were opened by hand or their agents are running.
 
 ### Background searches
 
-Once the list shows, `refreshExtras()` runs the slower work, each step best effort:
+The slower searches stay out of the main one, so they don't hold up the list. When each runs is set by `REFRESH_TIMING` in `src/core/service.ts`. `refreshExtras()` runs two of them, each best effort:
 
 - **Team requests**, which can run to a hundred pull requests and make GitHub's search slow.
 - **Others you could review** (`searchReviewable`): open, ready pull requests in your repositories that aren't yours, weren't requested from you, and aren't approved.
+
+They first load about 5 seconds after the first list shows, so they don't compete with it, then every 5 minutes. After each main search, `runBackground()` starts whatever is due: recently closed ones every 10 minutes, these every 5. The checks happen at each poll, so with a long poll interval a search runs at the first poll after it's due. A manual refresh (the sidebar's **Refresh**, `refresh({ full: true })`) and a change to a `diffline.watch` setting run the main search, recently closed ones, team requests and others at once. Refresh's progress indicator covers the main list; the rest fills in as it answers.
+
+While a background search hasn't answered, its rows and group counts (`totals`, such as "12 of 40") stay as they were, at startup the last session's, so a group doesn't empty and fill again.
+
+After every main search and every load of team requests and others, `followUp()` fills in what open rows need, one pass at a time:
+
 - **Changed files** for open rows the search returned without them, 20 pull requests per query, cached by head commit. The risk score needs them.
 - **Code owners** (`markCodeOwned`): your teams and each repository's `CODEOWNERS` (from the default branch, in GitHub's three locations), both cached for an hour. `src/core/codeowners.ts` matches paths with GitHub's rules: the last matching line wins.
 
@@ -229,7 +236,7 @@ The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown
 
 ### Changes while a page is open
 
-The page isn't rebuilt when GitHub changes, so the reader keeps their place. After each list refresh and the background team search, the service emits `pullRequestChanged` for every row whose state, head or `updatedAt` moved. `extension.ts` passes it to `ReviewPanel.noticeChange()`, which compares the list's summary with what the page on screen was built from (`prChange()` in `src/core/review-status.ts`; a summary not newer than the page never counts) and posts `{ type: "host-pr-changed", key, change }` once per distinct change. `change.kind` is the most important one: `merged`, `closed`, `reopened`, `commits` or `updated`. The page shows one notice bar with **Refresh**, which saves, sends `POST /refresh` and reloads. A notice that the pull request was merged or closed also makes **Post now** ask first. A pull request that leaves every search (merged, and neither reviewed nor written by the viewer) loses its row, so no notice comes for it.
+The page isn't rebuilt when GitHub changes, so the reader keeps their place. After each main search and each background search, the service emits `pullRequestChanged` for every row whose state, head or `updatedAt` moved. `extension.ts` passes it to `ReviewPanel.noticeChange()`, which compares the list's summary with what the page on screen was built from (`prChange()` in `src/core/review-status.ts`; a summary not newer than the page never counts) and posts `{ type: "host-pr-changed", key, change }` once per distinct change. `change.kind` is the most important one: `merged`, `closed`, `reopened`, `commits` or `updated`. The page shows one notice bar with **Refresh**, which saves, sends `POST /refresh` and reloads. A notice that the pull request was merged or closed also makes **Post now** ask first. A pull request that leaves every search (merged, and neither reviewed nor written by the viewer) loses its row, so no notice comes for it.
 
 ### Sidebar
 
@@ -359,7 +366,7 @@ The extension's global storage (on macOS, `~/Library/Application Support/Code/Us
 
 JSON files are written to a temporary file and renamed, and writes to one file are queued, so an older save never lands after a newer one. A file that doesn't parse is set aside as `<file>.damaged`.
 
-`globalState` holds the last list (`lastList`), pull requests opened by hand (`pinned`), automatic run counts (`autoRuns`) and the choices about approved pull requests (`approvedRuns`, see [Automatic runs](#automatic-runs)). Agent settings are in `~/.diffline`.
+`globalState` holds the last list and its group counts (`lastList`, `lastTotals`), pull requests opened by hand (`pinned`), automatic run counts (`autoRuns`) and the choices about approved pull requests (`approvedRuns`, see [Automatic runs](#automatic-runs)). Agent settings are in `~/.diffline`.
 
 ## Security model
 

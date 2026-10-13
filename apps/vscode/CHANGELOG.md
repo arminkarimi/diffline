@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The sidebar list shows sooner.** It no longer waits for the background searches: the main search's results show as soon as GitHub answers, every minute as before. **Recently merged or closed** loads after the list, then every 10 minutes and right away when a pull request leaves the list; your teams' requests and **Others you could review** load about 5 seconds after the first list, then every 5 minutes. **Refresh** and changing a `diffline.watch` setting check everything at once, and background groups keep their rows and counts while they reload. `diffline.watch.recentlyClosedDays` now defaults to 3 days instead of 7. On a real account, the first list went from about 4.3 to 3.0 seconds (median of three).
+
 ## 0.3.0
 
 See where every pull request stands: your review and what changed since, merged and closed pull requests, and notices while a review is open. Works in Cursor.
