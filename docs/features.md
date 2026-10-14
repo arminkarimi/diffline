@@ -13,6 +13,7 @@ What Diffline does today, in the VS Code extension. Settings and setup are in th
 - [Workflow](#workflow)
 - [Less noise](#less-noise)
 - [The sidebar and Home](#the-sidebar-and-home)
+- [Open a review from a link](#open-a-review-from-a-link)
 - [Automatic runs](#automatic-runs)
 - [Posting to GitHub](#posting-to-github)
 - [Review metrics](#review-metrics)
@@ -147,6 +148,14 @@ The list shows as soon as GitHub answers its main search (review requested, assi
 Each row also says how you reviewed it, when, and what changed since: "you approved 2d ago · new commits", "you commented 5h ago · updated since", "re-requested · you approved 3d ago". It says draft and conflicts, and merged or closed once it's over. The hover adds your review's commit, the pull request's state and its approvals. Your review is fetched for the pull requests you're involved in; team requests, watched repositories and others you could review keep their searches lean, so their rows only say whether you approved or requested changes.
 
 **Home** opens the review page on its list of pull requests, with the same groups and order as the sidebar. The list shows each pull request's progress, drafts, open findings and description gaps, your review and what changed since, draft, conflict, merged and closed badges, and its approvals ("2 approvals", "changes requested by 1") when GitHub's review decision isn't known. It notes when one is stacked on another.
+
+## Open a review from a link
+
+**Diffline: Open a Pull Request…** (⌥⇧⌘P on macOS, Ctrl+Shift+Alt+P on Windows and Linux) opens any pull request from a GitHub link or `owner/name#123`. When the clipboard holds one, the box starts with it.
+
+A link opens a review from a browser, a chat or a terminal: `vscode://arminkarimi.diffline/open?url=https://github.com/acme/web/pull/123`, or `?pr=acme/web%23123`. Cursor's links start with `cursor://`. **Diffline: Copy Link to This Review** copies the link for the open review or a sidebar row. The first time, VS Code asks whether Diffline may open the link. A link only opens the review and adds it to the sidebar; it never runs the agents or posts anything.
+
+Opening doesn't refresh the sidebar or wait for it. The page shows as soon as GitHub answers, with the description, discussion, checks, workflow and agent briefing, and "Loading the changes…" where the diff goes; the changes fill in when they're ready, without a reload. Small pull requests open in one go. On a large one, the page shows in about 1 second instead of 4 to 8, and the diff takes about 3 seconds more to draw. The [extension's README](../apps/vscode/README.md) has the link formats and what works while the changes load.
 
 ## Automatic runs
 

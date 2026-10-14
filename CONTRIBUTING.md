@@ -65,8 +65,9 @@ node scripts/e2e-agents.ts owner/name#123 --clone /path/to/clone
 | `--sample` | Builds the page from `test/fixtures/review-data.json` instead of GitHub. The views work; nothing can be posted. |
 | `--metrics sample\|<file>\|empty\|off` | Gives the page a review metrics report: from made-up events, from a log file (`events.jsonl`), from an empty log, or with metrics turned off. |
 | `--start metrics` | Opens the page on the review metrics report. |
+| `--staged <ms>` | Opens the page without the diff ("Loading the changes…") and sends it that many ms later, as the panel does for a pull request whose diff isn't built yet. `--staged-error <ms>` sends a failure instead. |
 
-`node scripts/dev-page.ts --sample --metrics sample --start metrics` shows the report on made-up data, without GitHub.
+`node scripts/dev-page.ts --sample --metrics sample --start metrics` shows the report on made-up data, without GitHub. `node scripts/dev-page.ts --sample --staged 3000` shows the page opening in two parts.
 
 ### The VS Code smoke test
 
@@ -78,6 +79,16 @@ DIFFLINE_SMOKE_PR=owner/name#123 ./apps/vscode/scripts/vscode-smoke.sh
 ```
 
 Set `DIFFLINE_SMOKE_CLONE=/path/to/clone` to make it faster. The script expects VS Code at `/Applications/Visual Studio Code.app`, so it runs on macOS.
+
+### Timing an open
+
+`open-timing.sh` opens a pull request by link in an isolated VS Code, once cold, then with the diff cached and with everything cached, and prints the extension's timing of each open (see [Timing an open](docs/architecture.md#timing-an-open)). Build first, then run from `apps/vscode`:
+
+```sh
+DIFFLINE_SMOKE_PR=owner/name#123 ./scripts/open-timing.sh
+```
+
+`DIFFLINE_TIMING_RUNS` sets how many cached opens of each kind (2 by default). `DIFFLINE_TIMING_SEED=/path/to/clone.git` copies a bare clone in as Diffline's own, so the first open doesn't clone. `DIFFLINE_TIMING_LOG=1` also prints what was fetched and built, with the repository's name left out. It makes a few GitHub requests per open; keep runs few.
 
 ## Code style
 

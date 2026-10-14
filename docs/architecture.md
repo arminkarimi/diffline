@@ -27,13 +27,13 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 | `src/agents/` | Agent settings, prompts, output schemas, the harnesses, running a review, and validating its output. |
 | `src/vscode/` | The VS Code surfaces: the review panel, the page builder, the sidebar tree. |
 | `test/` | Unit tests (`node --test`). `fake-vscode.ts` stands in for the `vscode` module. |
-| `test-vscode/smoke.cjs` | A smoke test that runs inside a real VS Code (see [CONTRIBUTING.md](../CONTRIBUTING.md)). |
-| `scripts/` | Developer scripts: GitHub smoke checks, an end-to-end agent run, the page in a browser, the VS Code smoke test. |
+| `test-vscode/` | Code that runs inside a real VS Code: the smoke test (`smoke.cjs`, see [CONTRIBUTING.md](../CONTRIBUTING.md)) and the open timing (`open-timing.cjs`, see [Timing an open](#timing-an-open)). |
+| `scripts/` | Developer scripts: GitHub smoke checks, an end-to-end agent run, the page in a browser, the VS Code smoke test, timing an open. |
 | `esbuild.mjs` | Bundles `src/extension.ts` to `dist/extension.cjs` and copies `packages/review-ui` into `media/ui`. |
 
 ## Activation
 
-The extension activates on `onStartupFinished` (`package.json`). `activate()` in `src/extension.ts`:
+The extension activates on `onStartupFinished`, and on `onUri` so that a [link](#links) can start it (`package.json`). `activate()` in `src/extension.ts`:
 
 1. Creates the output channel (**Diffline: Show Agent Log**), the `Store` in the extension's global storage, and `Repos`.
 2. Creates `DifflineService`, giving it the store, repos, VS Code's `globalState` as its memory, and a function that reads the current settings (`readConfig`).
@@ -119,7 +119,7 @@ After each refresh, `offerStops()` emits `approvedWhileRunning` once per run for
 2. Workspace folders with a git remote that points at the repository.
 3. A managed clone in `<storage>/clones/<owner>__<name>`, created on first use: bare, partial (`--filter=blob:none`, so no file contents until needed), no tags.
 
-`ensureCommits()` fetches only what's missing: GitHub's `refs/pull/<n>/head`, and the base commit by id (or the base branch if the server refuses). Fetches never touch the checked-out branch. Git operations on one clone run one at a time.
+`ensureCommits()` fetches only what's missing: GitHub's `refs/pull/<n>/head`, and the base commit by id (or the base branch if the server refuses). It checks again once it's its turn on the clone, so a fetch that ran meanwhile, such as `fetchHead()` when a pull request [opens](#the-early-fetch), counts. Fetches never touch the checked-out branch. Git operations on one clone run one at a time.
 
 The managed clone keeps the `gh auth git-credential` helper in its own config, for `github.com` only, because a partial clone downloads file contents later, when a command first needs them. An empty generic helper keeps the user's own credential helpers out. Git runs with `GIT_TERMINAL_PROMPT=0` and SSH in batch mode, so it fails instead of waiting for input (`GIT_ENV` in `src/core/exec.ts`).
 
@@ -206,7 +206,7 @@ All three get a minimal environment (`agentEnv()` in `src/core/exec.ts`): what t
 
 The page is `packages/review-ui` (`index.html`, `app.js`, `styles.css`), plain HTML, CSS and JavaScript with no build step. `esbuild.mjs` copies it into `media/ui`, which is what the `.vsix` ships.
 
-`src/vscode/panel.ts` hosts it in one webview panel, for one pull request at a time. `retainContextWhenHidden` keeps the page's state when the tab is hidden. To open a pull request, the panel shows a loading page, renders from the cached GitHub detail when there is one, then checks GitHub and re-renders only if something changed.
+`src/vscode/panel.ts` hosts it in one webview panel, for one pull request at a time. `retainContextWhenHidden` keeps the page's state when the tab is hidden. To open a pull request, the panel shows a loading page, then the page in one or two stages (see [Opening a pull request](#opening-a-pull-request)). When it opened from a cached GitHub detail, it then checks GitHub and re-renders only if something changed.
 
 `src/vscode/page.ts` builds the HTML from `index.html`:
 
@@ -216,7 +216,7 @@ The page is `packages/review-ui` (`index.html`, `app.js`, `styles.css`), plain H
 
 ### Host bridge
 
-The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target)`, `runAgents()`, for the [review metrics](#review-metrics) `metrics(m)`, `metricsReport(o)` and `metricsExport(o)`, and for the [agent review export](#agent-review-export) `agentMarkdown(o)`. Each becomes a message that names the pull request the page was built for, so a save sent while another pull request loads still goes to its own. Request ids are unique per page, so a late answer can't settle a request from a newer page.
+The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target)`, `runAgents()`, for the [review metrics](#review-metrics) `metrics(m)`, `metricsReport(o)` and `metricsExport(o)`, and for the [agent review export](#agent-review-export) `agentMarkdown(o)`, and `rendered(o)` for [timing an open](#timing-an-open). Each becomes a message that names the pull request the page was built for, so a save sent while another pull request loads still goes to its own. Request ids are unique per page, so a late answer can't settle a request from a newer page.
 
 | Message from the page | What the extension does |
 | --- | --- |
@@ -231,8 +231,9 @@ The page calls `DIFFLINE_HOST.api(method, path, body)`, `reload()`, `open(target
 | `metricsReport` | Returns the report for a period and grouping (`DifflineService.metricsReport`). |
 | `metricsExport` | Writes the period's events as JSON or finding outcomes as CSV where the reviewer picks, through a save dialog. |
 | `agentMarkdown` | Copies the agent review as Markdown, or saves it through a save dialog (`exportAgentReview`), and returns its size. |
+| `rendered` | The page drew a stage (`page` or `changes`) with its own timings, or hit an error (`error`, which is logged). Feeds the open's log line. No answer. |
 
-The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics, and `host-pr-changed` when the open pull request changed on GitHub (below).
+The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown` messages with `api-result`. It sends `host-view` to switch the page to its list (Home) with fresh groups, or to the review metrics; `host-pr-changed` when the open pull request changed on GitHub (below); and `host-data` with the diff for a page that opened without it ([Two stages](#two-stages)).
 
 ### Changes while a page is open
 
@@ -243,6 +244,80 @@ The page isn't rebuilt when GitHub changes, so the reader keeps their place. Aft
 `src/vscode/tree.ts` draws the sidebar from the service's records. `src/core/grouping.ts` groups and sorts them, and the page's list uses the same groups. Merged and closed pull requests go in **Recently merged or closed**, last, when grouped by relationship, and stay in their repository when grouped by repository. `src/core/row-text.ts` writes a row's description and hover: your review and what changed since, the state, approvals, and the agents' status, said as since the agents ran. `src/core/risk.ts` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together.
 
 A row's context value is `pr.<state>` (`idle`, `running` or `elsewhere`), then `.agent` when the pull request has an agent review and `.pinned` when it was opened by hand. `package.json` shows the row's menu entries by matching it.
+
+## Opening a pull request
+
+**Open a Pull Request…** (`diffline.openPullRequest`) and a link both call `openLink()` in `src/extension.ts`: `service.pin(key)`, then `panel.show(key)`. Neither refreshes the list or runs agents. Without a pull request as its argument, the command reads the clipboard with `clipboardPullRequest()` (`src/core/links.ts`), which takes a GitHub pull request link, `owner/name#123` or a Diffline link standing alone, and starts the input box with its GitHub link, selected. Its keybinding (`package.json`) is `cmd+alt+shift+p` on macOS and `ctrl+shift+alt+p` elsewhere, which VS Code's default keybindings leave free.
+
+```
+ Extension host                                                        Review page (webview)
+ ReviewPanel.show()
+   ├─ "Loading acme/web#123…"
+   ├─ DifflineService.loadStaged()
+   │    ├─ prefetch(): git fetch refs/pull/<n>/head ─┐ side by side
+   │    ├─ detail(): gh ──► GitHub ──────────────────┘
+   │    ├─ first: the detail, then liveData()
+   │    └─ data: loadData() once the detail is in
+   ├─ first ─► page with pendingReviewData() ─────────────────────────► "Loading the changes…"
+   │                                         ◄────────────────────────  rendered { stage: "page" }
+   ├─ data ──► host-data { data, list, groups } ──────────────────────► start("changes"): drawn in place
+   │                                         ◄────────────────────────  rendered { stage: "changes" }
+   └─ log: Opened acme/web#123 in … ms: the page in … ms (…), the changes in … ms (…)
+```
+
+### Links
+
+The URI handler (`registerUriHandler` in `src/extension.ts`) takes `<scheme>://arminkarimi.diffline/open?pr=owner/name%23123` or `?url=<GitHub pull request link>`, where `<scheme>` is the editor's own (`vscode.env.uriScheme`: `vscode`, `vscode-insiders`, `cursor`). VS Code asks the user before it first hands a link from outside the editor to the extension. `parseOpenLink()` in `src/core/links.ts`, a pure module with its own tests, checks the parts VS Code passes, decoded. A link can come from anywhere, so it's strict:
+
+- The path is `/open`, and the query at most 2,000 characters.
+- Exactly one of `pr` and `url`.
+- `url`: `http` or `https` on `github.com` or `www.github.com`, with no user, password or port, and a path `/<owner>/<name>/pull/<n>`, optionally followed by a tab such as `/files`.
+- `pr`: `owner/name#<n>`. An unescaped `#` starts the URI's fragment, so a fragment of digits completes a `pr` that has none.
+- Names `parseKey()` accepts, and a number of 1 to 9 digits that isn't 0.
+
+A refused link logs "Didn't open a link: …" and shows a warning that says why and gives both formats. An accepted one logs "Opening owner/name#123 from a link" and calls `openLink()`. `reviewLink()` builds the `?pr=` link that **Copy Link to This Review** (`diffline.copyLink`) copies, with the editor's scheme.
+
+### Without a list refresh
+
+Opening doesn't run a search, and the sidebar's state (refreshing, rate limited, empty) never holds it up. `pin()` adds the pull request to the records opened by hand, and `detail()`, which the open needs anyway, gives a pinned record that no search has listed a summary of its own: `summaryFromDetail()` makes one from the detail (title, state, size, checks, the viewer's review; no changed files) and the service emits `change`, so the row fills in. The next regular refresh replaces it with the search's.
+
+### Two stages
+
+`ReviewPanel.show()` gets two promises from `DifflineService.loadStaged()`: `first`, the detail and everything the page shows around the diff (`liveData()`: the agent review, the saved state, the list), and `data`, the diff (`loadData()`, once the detail says which head and base). `loadStaged()` also starts [the early fetch](#the-early-fetch). When `first` is in:
+
+- A diff that's ready, or gets ready within `DIFF_GRACE_MS` (150 ms), goes in the page, which opens in one stage.
+- Otherwise, and always for a pull request with at least `STAGE_LINES` (2,000) changed lines (GitHub's additions plus deletions), the page is built with `pendingReviewData()` from `src/vscode/page.ts`: no files, `pending: true`, and the head and base from the detail. Drawing a large diff takes seconds, and the rest of the page needn't wait for it.
+
+Once that page says it drew (`rendered`, stage `page`) and the diff is built, the panel fetches a fresh list and posts `{ type: "host-data", data, list, groups }`. If the diff fails, it logs "Couldn't load the changes of owner/name#123: <reason>" and posts `{ type: "host-data", error }`.
+
+In `packages/review-ui/app.js`, each start of the page runs `boot()` with an `AbortController` signal that owns its listeners and timers. `host-data` with the diff sets `window.REVIEW_DATA` and calls `start("changes")`, which ends the boot before and boots again in the same document: the review state object carries over, the tab is in the address's hash, and the scroll position is put back. Nothing reloads, and nothing saved is lost. With an error, the page shows "The changes didn't load" with the reason and **Try again**, which refreshes like the notice bar's **Refresh**.
+
+While the page waits for the diff (`PENDING` in `app.js`):
+
+- The Changes and Map tabs show a "Loading the changes…" card, Changes with the briefing above it. The header shows GitHub's file count, additions and deletions, and no risk score.
+- The briefing counts the findings without listing them, since they sit on diff lines. The Discussion tab counts the threads on lines without listing them.
+- Actions that need the diff (`NEEDS_DIFF`: Finish review, Next, Guide, Comments, the file palette, jumps to findings and the briefing, the tour, the risk breakdown) show a toast instead. Of the keys, only 1 to 4 and `?` work.
+- `save()` leaves the reviewed marks, draft places and reading order as they were saved.
+
+### The early fetch
+
+`loadStaged()` starts `DifflineService.prefetch()` beside the detail query. It resolves the clone (a repository's first open clones it here) and, unless the head already known from an earlier detail or the list is in the clone, calls `Repos.fetchHead()`. That fetches `refs/pull/<n>/head` under the clone's lock, into the same ref in Diffline's own clone and into `FETCH_HEAD` in the user's, and logs "Fetching pull request #123's head early into <clone>". Correctness doesn't depend on it: `ensureCommits()` still checks the exact head and base from the detail, and since it checks again once it holds the clone's lock, it finds what the early fetch brought instead of fetching it again. A failed early fetch is logged and ignored. On a small pull request whose head wasn't in the clone, the diff was ready about 0.5 s sooner.
+
+### Timing an open
+
+Each page knows which load of the panel built it (`hostShim(key, load)`), so a report from an older page doesn't count. After each stage the page lays itself out and calls `DIFFLINE_HOST.rendered({ stage, ms })` with its `performance.now()` marks: when it started (for the first stage, once the HTML and its inline data were parsed) and how long building its model, drawing and laying out took. It reports right after layout rather than after the next frame, so a hidden panel still counts. The panel waits up to 60 seconds for each stage, then writes "?" for its time. `openedLine()` in `src/vscode/panel.ts` writes the log line:
+
+```
+Opened acme/web#123 in 1210 ms (data 1150 ms, page 20 ms, rendered 40 ms)
+Opened acme/web#123 in 4210 ms: the page in 980 ms (detail 870 ms, page 20 ms, rendered 90 ms), the changes in 4210 ms (diff 1900 ms, rendered 2300 ms)
+Opened acme/web#123: the page in 980 ms (detail 870 ms, page 20 ms, rendered 90 ms); the changes didn't load
+```
+
+`data`, `detail`, `diff`, "the page in" and "the changes in" count from the open; `page` and `rendered` are durations. The page's total can include up to 150 ms waiting for a diff that was nearly ready. " (from cache)" ends the line when the open used a detail fetched earlier. A page error logs "The page for acme/web#123 hit an error: <message>". `ReviewPanel.timings` keeps the last 20 opens for the measuring script.
+
+`scripts/open-timing.sh` measures opens in a real VS Code. It starts one with a throwaway profile that lists only the pull request in `DIFFLINE_SMOKE_PR` and runs no agents, and `test-vscode/open-timing.cjs` opens that pull request by link: once cold, then `DIFFLINE_TIMING_RUNS` times (2 by default) with the diff cached on disk, and as many with the detail cached too, printing each open's timing. `DIFFLINE_TIMING_SEED` copies a bare clone in as Diffline's own, so nothing clones, and `DIFFLINE_TIMING_LOG=1` adds the extension's fetch and build lines with the repository's name left out. Like the smoke test, it runs on macOS.
+
+Measured on a large pull request (about 30 files and 130,000 diff lines), the page shows in about 1 s instead of 4 to 8 s, and drawing the changes takes about 3 s after the diff is built: most of each open is now in the webview (about 0.5 s moving and parsing the page data, the rest laying out the Changes HTML).
 
 ## Agent review export
 

@@ -45,7 +45,7 @@ Automatic runs are on by default. About two minutes after Diffline first starts,
    | Your teams' requests | A review is requested from one of your teams. Collapsed when it's long |
    | Your pull requests | You opened it |
    | Watched | Every open pull request in the repositories in `diffline.watch.repositories` |
-   | Opened here | Ones you opened with **Open Pull Request…** |
+   | Opened here | Ones you opened with **Open a Pull Request…** or a [link](#open-a-review-from-a-link) |
    | Others you could review | The top 10 open, ready pull requests in your repositories that aren't yours, weren't requested from you or your teams, and aren't approved yet. Your repositories are the ones in the groups above |
    | Recently merged or closed | Last: pull requests you reviewed or wrote that were merged or closed in the last 3 days (`diffline.watch.recentlyClosedDays`), and ones you opened here that aren't open any more. Most recently updated first, and collapsed when it's long |
 
@@ -67,11 +67,31 @@ Automatic runs are on by default. About two minutes after Diffline first starts,
 4. **The agents** run in parallel: the guide (description check, chapters, flow diagram) and the reviewers, by default architecture, correctness, tests and security, plus any you add. Each runs the harness headless on a checkout of the pull request's head that Diffline makes for the run (and deletes after), with the changed files as they were before beside it. Claude Code agents get file tools only (read, search, list), limited to those folders: no shell, no repository settings or hooks, no MCP servers. Codex agents run in its read-only sandbox. Pi agents get only Pi's read, grep, find and ls tools: no shell, no extensions, skills or context files, no saved session, and offline mode (no update checks, telemetry or package installs). Pi runs in an empty folder of Diffline's own, never inside the checkout, because Pi always loads a repository's `.pi/settings.json` (which can install packages and run commands) and `.pi/SYSTEM.md`; the agent reads the checkout by its full path. Like Codex's sandbox, Pi's read tools aren't limited to one folder. All of them get a minimal environment, without your other tokens and keys; Pi also gets your model providers' credentials and its own `PI_` settings, never GitHub tokens. Every line an agent points at is checked against the diff; anchors that don't resolve are dropped rather than posted on the wrong line.
 5. **The review page** is the Diffline page from `packages/review-ui`, in a VS Code panel: the briefing, chapters, Map, description check, Discussion, drafts, the finish sheet and posting. Its list (Home, or the back arrow) shows the same pull requests in the same groups and order as the sidebar. A line under the title says where you stand: "You approved this 2 days ago at abc1234 · 3 new commits and 2 new comments since", "You haven't reviewed this yet", or "Merged by Alex Doe 3 days ago". When the sidebar's next check sees the open pull request merged, closed, pushed to or updated on GitHub, a bar on the page says so with **Refresh**; the page doesn't reload by itself, so you keep your place. Posting a review on a merged or closed pull request asks first.
 
+## Open a review from a link
+
+**Diffline: Open a Pull Request…** (**⌥⇧⌘P** on macOS, **Ctrl+Shift+Alt+P** on Windows and Linux) takes a GitHub link or `owner/name#123`. When the clipboard holds a pull request (a GitHub link, `owner/name#123` or a Diffline link), the box starts with its GitHub link, selected: press Enter to open it, or type to replace it.
+
+A Diffline link opens a review from outside the editor, such as a browser, a chat or a terminal:
+
+```
+vscode://arminkarimi.diffline/open?url=https://github.com/acme/web/pull/123
+vscode://arminkarimi.diffline/open?pr=acme/web%23123
+```
+
+In Cursor the link starts with `cursor://`, in VS Code Insiders with `vscode-insiders://`. `?url=` takes a GitHub pull request link, encoded or not, tabs like `/files` included. `?pr=` takes `owner/name#number` with the `#` written `%23` (a plain `#` works too). **Diffline: Copy Link to This Review**, in the Command Palette or a sidebar row's menu, copies the link for the open review or that row. Chat apps often don't make `vscode://` links clickable; pasting the GitHub link into **Open a Pull Request…** works everywhere.
+
+The first time a link opens from outside the editor, VS Code asks "Allow 'Diffline' extension to open this URI?". Choose **Open**. Ticking **Do not ask me again for this extension** skips the question from then on, and **Extensions: Manage Authorized Extension URIs...** undoes that.
+
+A link only opens a review. It adds the pull request to the sidebar, as **Open a Pull Request…** does, and never runs the agents or posts anything. A link that doesn't name a GitHub pull request shows a warning and opens nothing.
+
+**The review opens in two parts.** Opening a pull request doesn't refresh the sidebar or wait for it: the row shows at once and fills in from the pull request's own details, and the next regular check replaces it. The page shows as soon as GitHub answers (title, description, Discussion, Workflow, checks and the agent briefing), with "Loading the changes…" on the Changes and Map tabs while Diffline gets the commits and builds the diff. Meanwhile Finish review, Next, Guide, Comments and jumps to files and findings say "The changes are still loading. This works once they're in."; the keys 1 to 4 and `?` work. Then the changes fill in without a reload, on the same tab and scroll, and nothing you saved is lost. A diff that's ready right away goes in at once, so small pull requests open in one go; pull requests with 2,000 or more changed lines always open in two parts. If the diff doesn't load, the Changes tab says why, with **Try again**.
+
 ## Fast by design
 
 - Diffs are built from a local clone, not fetched file by file (about 0.2 s for a 30-file pull request), and cached by head commit.
-- Commits are only fetched when missing. Diffline uses the clone in your workspace or the `diffline.clones` setting, and otherwise keeps its own partial clone (no file contents until needed).
+- Commits are only fetched when missing. Diffline uses the clone in your workspace or the `diffline.clones` setting, and otherwise keeps its own partial clone (no file contents until needed). While GitHub answers, Diffline already fetches the pull request's head into the clone.
 - Pull requests that ask for your review are prepared in the background, so opening one is mostly the GitHub detail request (about 1 s).
+- The page shows before the diff is drawn. On a large pull request it shows in about 1 s instead of 4 to 8; drawing a large diff still takes about 3 s after that.
 - Large pull requests (over 40 files or 4,000 diff lines) stay responsive: files off screen skip layout and paint until you scroll near them, and jumps to a finding, draft or flow step land exactly. A 383-file pull request opens in about 1.2 s instead of 3, and a relayout takes milliseconds instead of a second.
 
 ## Customizing the agents
@@ -194,6 +214,8 @@ What leaves it:
 - **Pi agents can't search (grep or find fail).** Pi's grep and find tools use ripgrep (`rg`) and fd. Pi normally downloads them, but Diffline runs it offline, so it won't. Install both, or run `pi` once in a terminal so it downloads them. Without them, the agents can still read and list files.
 - **Agents fail or find nothing.** **Diffline: Show Agent Log** has each run's agents, errors, tokens and cost. Problems in `agents.yml`, like a bad id or an agent without instructions, are listed there too. For more, each run keeps every agent's prompt, raw output and log in the extension's global storage, under `runs/` (on macOS, `~/Library/Application Support/Code/User/globalStorage/arminkarimi.diffline/runs`).
 - **Agents say they're running in another window.** Another VS Code window is running them. Stop them there, or wait.
+- **A Diffline link does nothing.** The link's scheme must be your editor's: `vscode://` for VS Code, `cursor://` for Cursor. Or paste the GitHub link into **Open a Pull Request…**. A link Diffline can't read shows a warning, such as "Diffline: That link doesn't name a GitHub pull request.", with the formats it takes.
+- **Opening a pull request is slow.** **Diffline: Show Agent Log** has a line for each open, such as `Opened acme/web#123 in 1210 ms (data 1150 ms, page 20 ms, rendered 40 ms)`, or for one that opened in two parts `Opened acme/web#123 in 4210 ms: the page in 980 ms (detail 870 ms, page 20 ms, rendered 90 ms), the changes in 4210 ms (diff 1900 ms, rendered 2300 ms)`. `detail` is when GitHub answered and `diff` when the commits were in and the diff built, both counted from the open (`data` is both, in one part); `page` is building the page and `rendered` drawing it. A slow `detail` is GitHub; a slow `rendered` is a large diff. `(from cache)` at the end means it opened from details fetched earlier.
 - **Installing from a terminal prints `DeprecationWarning: url.parse() …`.** That comes from VS Code's own command-line tool, not Diffline. It's harmless; the install still works.
 - **Remote windows (SSH, WSL, containers).** Diffline runs where the workspace is, so `gh`, `git` and the agent CLI need to be installed and signed in there.
 
@@ -216,6 +238,7 @@ Open `apps/vscode` in VS Code and press F5 to run the extension. From `apps/vsco
 node scripts/smoke-github.ts owner/name#123                          # read-only GitHub checks
 node scripts/e2e-agents.ts owner/name#123 --clone /path/to/clone     # run the agents end to end (costs money)
 DIFFLINE_SMOKE_PR=owner/name#123 ./scripts/vscode-smoke.sh           # an isolated VS Code opens it and checks the basics
+DIFFLINE_SMOKE_PR=owner/name#123 ./scripts/open-timing.sh            # times opening it, cold and cached (build first)
 ```
 
 [CONTRIBUTING.md](https://github.com/arminkarimi/diffline/blob/main/CONTRIBUTING.md) has the details, and [docs/architecture.md](https://github.com/arminkarimi/diffline/blob/main/docs/architecture.md) explains how the extension works.
