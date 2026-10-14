@@ -12,18 +12,21 @@ export const scriptJson = (value: unknown) => JSON.stringify(value).replace(/</g
  * a change) must still go to its own pull request. Request ids are unique per page, so a late answer meant for the
  * page before can't settle a request of this one.
  */
-export function hostShim(key: string): string {
+export function hostShim(key: string, load = 0): string {
   return `(() => {
   const vscode = acquireVsCodeApi();
   const key = ${scriptJson(key)};
+  // Which load of the panel built this page, so the extension can tell its timing from an older page's.
+  const load = ${scriptJson(load)};
   const page = Math.random().toString(36).slice(2);
   let seq = 0;
   const pending = new Map();
   window.addEventListener("message", (event) => {
     const m = event.data;
-    // The extension asks the page to show a view (the sidebar's Home), with a fresh list, or says the pull request on
-    // screen changed on GitHub since the page was built ("host-pr-changed", see ReviewPanel.noticeChange).
-    if (m && (m.type === "host-view" || m.type === "host-list" || m.type === "host-pr-changed")) { window.dispatchEvent(new CustomEvent("diffline-host", { detail: m })); return; }
+    // The extension asks the page to show a view (the sidebar's Home), with a fresh list, says the pull request on
+    // screen changed on GitHub since the page was built ("host-pr-changed", see ReviewPanel.noticeChange), or sends the
+    // diff to a page that opened without it ("host-data", see ReviewPanel.show).
+    if (m && (m.type === "host-view" || m.type === "host-list" || m.type === "host-pr-changed" || m.type === "host-data")) { window.dispatchEvent(new CustomEvent("diffline-host", { detail: m })); return; }
     if (!m || m.type !== "api-result") return;
     const p = pending.get(m.id);
     if (!p) return;
@@ -50,8 +53,20 @@ export function hostShim(key: string): string {
     metricsExport(o) { return ask({ type: "metricsExport", format: o && o.format, days: o && o.days }); },
     // The agent review as Markdown for another agent: { mode: "copy" | "open" | "save" }. The extension copies or saves it.
     agentMarkdown(o) { return ask({ type: "agentMarkdown", mode: o && o.mode }); },
+    // The page drew itself: { stage: "page" | "changes", ms } with its own timings (performance.now()), for the log
+    // line; or { stage: "error", error } when it hit an error.
+    rendered(o) { vscode.postMessage({ type: "rendered", key, load, stage: o && o.stage, ms: o && o.ms, error: o && o.error ? String(o.error).slice(0, 300) : undefined }); },
   };
 })();`;
+}
+
+/**
+ * The stand-in diff a page opens with before the real one is built (ReviewPanel.show): no files, `pending: true`, and the
+ * head and base from GitHub's detail. app.js shows "Loading the changes…" where the diff goes until "host-data" brings it.
+ */
+export function pendingReviewData(repo: string, pr: { baseRefName: string; baseRefOid: string; headRefName: string; headRefOid: string }) {
+  const ref = (name: string, sha: string) => ({ ref: name, sha, short: String(sha || "").slice(0, 7) });
+  return { version: 1, pending: true, generatedAt: "", repo, base: ref(pr.baseRefName, pr.baseRefOid), head: ref(pr.headRefName, pr.headRefOid), mergeBase: "", since: null, commits: [], files: [], workspace: {} };
 }
 
 export interface PageParts {

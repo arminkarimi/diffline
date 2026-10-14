@@ -26,7 +26,7 @@ exports.run = async () => {
   step(`activated in ${Date.now() - t} ms`);
 
   const commands = await vscode.commands.getCommands(true);
-  for (const c of ["diffline.refresh", "diffline.open", "diffline.openPullRequest", "diffline.runAgents", "diffline.cancelAgents", "diffline.selectHarness", "diffline.editAgentInstructions", "diffline.resetAgentSettings", "diffline.showLog", "diffline.newAgent", "diffline.removeAgent", "diffline.openHome", "diffline.groupBy", "diffline.sortBy", "diffline.showMetrics", "diffline.deleteMetrics", "diffline.copyAgentReview"]) {
+  for (const c of ["diffline.refresh", "diffline.open", "diffline.openPullRequest", "diffline.runAgents", "diffline.cancelAgents", "diffline.selectHarness", "diffline.editAgentInstructions", "diffline.resetAgentSettings", "diffline.showLog", "diffline.newAgent", "diffline.removeAgent", "diffline.openHome", "diffline.groupBy", "diffline.sortBy", "diffline.showMetrics", "diffline.deleteMetrics", "diffline.copyAgentReview", "diffline.copyLink"]) {
     assert.ok(commands.includes(c), `command ${c} is registered`);
   }
   step("commands registered");

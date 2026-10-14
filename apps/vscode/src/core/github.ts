@@ -32,6 +32,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       mergedBy { login ... on User { name } }
       baseRefName headRefName baseRefOid headRefOid
       reviewDecision mergeStateStatus
+      additions deletions changedFiles
       labels(first: 20) { nodes { name } }
       reviewRequests(first: 30) { nodes { requestedReviewer { __typename ... on User { login name } ... on Team { slug name } } } }
       latestOpinionatedReviews(first: 30) { nodes { author { login ... on User { name } } state submittedAt } }
@@ -333,6 +334,9 @@ export function normalizePullRequest(data: any): PullRequestDetail {
       .map((n) => n.path),
     checks,
     lastReview: lastReview ? { submittedAt: lastReview.at, commit: lastReview.commit, state: lastReview.state } : null,
+    additions: typeof pr.additions === "number" ? pr.additions : null,
+    deletions: typeof pr.deletions === "number" ? pr.deletions : null,
+    changedFiles: typeof pr.changedFiles === "number" ? pr.changedFiles : null,
   };
   return { viewer, pr: normalized, threads };
 }

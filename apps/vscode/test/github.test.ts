@@ -66,6 +66,9 @@ function prFixture() {
         headRefOid: HEAD,
         reviewDecision: "REVIEW_REQUIRED",
         mergeStateStatus: "BLOCKED",
+        additions: 120,
+        deletions: 7,
+        changedFiles: 4,
         labels: { nodes: [{ name: "feature" }, { name: "backend" }] },
         reviewRequests: {
           nodes: [
@@ -189,8 +192,10 @@ test("normalizePullRequest matches normalize_github", () => {
   assert.deepEqual(Object.keys(pr), [
     "title", "body", "url", "state", "isDraft", "createdAt", "updatedAt", "mergedAt", "mergedBy", "closedAt", "author", "baseRefName", "headRefName", "baseRefOid", "headRefOid",
     "defaultBranch", "reviewDecision", "mergeStateStatus", "labels", "reviewRequests", "latestReviews", "reviews", "comments",
-    "viewedFiles", "checks", "lastReview",
+    "viewedFiles", "checks", "lastReview", "additions", "deletions", "changedFiles",
   ]);
+  // The size, for the page while its diff loads.
+  assert.deepEqual([pr.additions, pr.deletions, pr.changedFiles], [120, 7, 4]);
 });
 
 test("normalizePullRequest: no review from the viewer, no commits", () => {

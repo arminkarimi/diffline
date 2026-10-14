@@ -750,6 +750,18 @@ textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px
 .end h3 { margin: 0; font-size: 18px; color: var(--ink); font-variation-settings: "MONO" 0, "CASL" 0.5; }
 .end p { margin: 0; }
 
+/* The Changes and Map tabs while the diff loads, or when it didn't load (pendingHTML in app.js). */
+.pending-wrap { display: grid; gap: 20px; max-width: 860px; margin: 0 auto; padding-block: 22px 140px; }
+.pending {
+  display: grid; justify-items: center; gap: 10px; max-width: 540px; width: 100%; margin: 12px auto 0; padding: 28px 20px;
+  text-align: center; color: var(--ink-2); border: 1px dashed var(--line-2); border-radius: var(--r-card);
+}
+.pending h2 { margin: 0; font-size: 18px; color: var(--ink); font-variation-settings: "MONO" 0, "CASL" 0.5; }
+.pending p { margin: 0; }
+.pending .spin { width: 18px; height: 18px; opacity: .7; }
+.pending.is-error > .i { width: 20px; height: 20px; color: var(--bad); }
+@media (prefers-reduced-motion: reduce) { .pending .spin { animation-duration: 3s; } }
+
 /* ---------- Review guide ---------- */
 
 .guide { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; padding-bottom: 8px; }

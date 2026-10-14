@@ -46,6 +46,16 @@ function fakeService(load: (key: Key, opts: { cached?: boolean; home?: boolean }
       loads.push({ key: prKeyString(key), home: !!opts.home });
       return load(key, opts);
     },
+    // The same load in the two parts the panel opens with: the page around the diff, then the diff.
+    loadStaged: (key: Key, opts: { cached?: boolean; home?: boolean } = {}) => {
+      loads.push({ key: prKeyString(key), home: !!opts.home });
+      const p = load(key, opts);
+      const first = p.then((r: any) => ({ live: r.live, detail: { pr: r.live.pr } }));
+      const data = p.then((r: any) => r.data);
+      first.catch(() => undefined);
+      data.catch(() => undefined);
+      return { first, data };
+    },
     api: async (key: Key, method: string, apiPath: string) => {
       calls.push({ key: prKeyString(key), method, path: apiPath });
       return { ok: true };
@@ -360,4 +370,153 @@ test("hostShim: the page hears host-pr-changed as a diffline-host event", async 
   const message = { type: "host-pr-changed", key: "o/r#1", change: { kind: "merged" } };
   for (const fn of listeners) fn({ data: message });
   assert.deepEqual(events.map((e) => [e.type, e.detail]), [["diffline-host", message]]);
+});
+
+/* ---------- Opening in two parts: the page around the diff first, the diff when it's built ---------- */
+
+/** A service whose diff the test hands over (or fails) when it wants, after the page's part. */
+function stagedService() {
+  const { service } = fakeService(async (key) => review(key), false);
+  let finish: { resolve: (d: unknown) => void; reject: (e: Error) => void } | null = null;
+  (service as any).loadStaged = (key: Key) => {
+    const live = { pr: { title: `PR ${key.number}`, baseRefName: "main", baseRefOid: "b".repeat(40), headRefName: "topic", headRefOid: "c".repeat(40), changedFiles: 3 }, threads: [], agent: null };
+    const data = new Promise((resolve, reject) => (finish = { resolve, reject }));
+    data.catch(() => undefined);
+    return { first: Promise.resolve({ live, detail: { pr: live.pr } }), data };
+  };
+  (service as any).listItems = async () => [{ key: "o/r#1", loaded: true }];
+  return { service, finish: () => finish! };
+}
+
+/** What the page would say once it has drawn: its load comes from the shim the panel built it with. */
+function drew(webview: InstanceType<typeof fake.FakeWebview>, stage: "page" | "changes", ms = { start: 5, render: 7 }) {
+  const load = Number(/const load = (\d+);/.exec(webview.html)?.[1]);
+  webview.receive({ type: "rendered", key: "o/r#1", load, stage, ms });
+}
+
+const until = async (fn: () => unknown, what: string) => {
+  for (const end = Date.now() + 2000; Date.now() < end; await new Promise((r) => setTimeout(r, 5))) if (fn()) return;
+  assert.fail(`timed out waiting for ${what}`);
+};
+
+test("ReviewPanel: a diff that isn't ready opens the page without it, then goes to the drawn page; one log line times both", async () => {
+  const { service, finish } = stagedService();
+  const logs: string[] = [];
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, (l) => logs.push(l));
+  const opening = panel.show(A);
+  const webview = () => fake.created.at(-1)!.webview;
+  await until(() => webview().html.includes("window.REVIEW_DATA"), "the page without the diff");
+  const page = runPage(webview().html);
+  assert.equal(page.host && typeof page.host.rendered, "function");
+  assert.match(webview().html, /"pending":true/);
+  assert.match(webview().html, /"head":\{"ref":"topic","sha":"c{40}","short":"ccccccc"\}/);
+  assert.equal(panel.key && prKeyString(panel.key), "o/r#1");
+
+  // The diff is ready before the page has drawn: it waits for the page, which listens once it has.
+  finish().resolve({ head: { sha: "c".repeat(40) }, files: [{ path: "a.ts" }] });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(webview().posted.filter((m) => m.type === "host-data").length, 0);
+  drew(webview(), "page");
+  await opening;
+  const sent = webview().posted.filter((m) => m.type === "host-data");
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].data.files, [{ path: "a.ts" }]);
+  assert.deepEqual(sent[0].list, [{ key: "o/r#1", loaded: true }], "with the list as it is now that the diff is built");
+  assert.ok(Array.isArray(sent[0].groups));
+
+  drew(webview(), "changes", { start: 900, render: 40 });
+  await until(() => panel.timings.length, "the timing");
+  const t = panel.timings.at(-1)!;
+  assert.equal(t.staged, true);
+  assert.deepEqual(t.changesMarks, { start: 900, render: 40 });
+  assert.match(logs.at(-1)!, /^Opened o\/r#1 in \d+ ms: the page in \d+ ms \(detail \d+ ms, page \d+ ms, rendered \d+ ms\), the changes in \d+ ms \(diff \d+ ms, rendered \d+ ms\)$/);
+  panel.dispose();
+});
+
+test("ReviewPanel: a diff that fails tells the page why; one ready with the detail opens in one page unless the pull request is large", async () => {
+  const { service, finish } = stagedService();
+  const logs: string[] = [];
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, (l) => logs.push(l));
+  const opening = panel.show(A);
+  const webview = () => fake.created.at(-1)!.webview;
+  await until(() => webview().html.includes('"pending":true'), "the page without the diff");
+  finish().reject(new Error("Couldn't fetch pull request #1"));
+  drew(webview(), "page");
+  await opening;
+  assert.deepEqual(webview().posted.filter((m) => m.type === "host-data"), [{ type: "host-data", error: "Couldn't fetch pull request #1" }]);
+  assert.ok(logs.includes("Couldn't load the changes of o/r#1: Couldn't fetch pull request #1"));
+  assert.match(logs.at(-1)!, /^Opened o\/r#1: the page in \d+ ms \(.*\); the changes didn't load$/);
+
+  // Ready at once (the usual fake): one page with the diff in it, nothing sent after.
+  const { service: ready } = fakeService(async (key) => review(key), false);
+  const logs2: string[] = [];
+  const panel2 = new ReviewPanel((await extensionDir()) as any, ready as any, (l) => logs2.push(l));
+  await panel2.show(A);
+  const w2 = fake.created.at(-1)!.webview;
+  assert.doesNotMatch(w2.html, /"pending":true/);
+  assert.equal(w2.posted.filter((m) => m.type === "host-data").length, 0);
+  drew(w2, "page", { start: 300, render: 120 });
+  await until(() => panel2.timings.length, "the timing");
+  assert.match(logs2.at(-1)!, /^Opened o\/r#1 in \d+ ms \(data \d+ ms, page \d+ ms, rendered \d+ ms\)$/);
+  assert.deepEqual(panel2.timings.at(-1)!.pageMarks, { start: 300, render: 120 });
+
+  // Ready at once but large: the page still comes first, and the diff after it has drawn.
+  const { service: big } = fakeService(async (key) => ({ ...review(key), live: { ...review(key).live, pr: { title: "Big", additions: 1500, deletions: 500 } } }), false);
+  const panel3 = new ReviewPanel((await extensionDir()) as any, big as any, () => undefined);
+  const opening3 = panel3.show(A);
+  const w3 = () => fake.created.at(-1)!.webview;
+  await until(() => w3().html.includes('"pending":true'), "the page without the diff");
+  drew(w3(), "page");
+  await opening3;
+  assert.equal(w3().posted.filter((m) => m.type === "host-data").length, 1);
+  panel.dispose();
+  panel2.dispose();
+  panel3.dispose();
+});
+
+test("ReviewPanel: a diff for a page that was replaced meanwhile isn't sent", async () => {
+  const { service, finish } = stagedService();
+  const panel = new ReviewPanel((await extensionDir()) as any, service as any, () => undefined);
+  const opening = panel.show(A);
+  const webview = fake.created.at(-1)!.webview;
+  await until(() => webview.html.includes('"pending":true'), "the page without the diff");
+  const first = finish();
+  drew(webview, "page");
+  const again = panel.show(A); // a reload, say: a new page
+  first.resolve({ head: { sha: "x" }, files: [] });
+  await opening;
+  assert.equal(webview.posted.filter((m) => m.type === "host-data").length, 0);
+  await until(() => /const load = 2;/.test(webview.html), "the new page");
+  finish().resolve({ head: { sha: "x" }, files: [] });
+  drew(webview, "page");
+  await again;
+  assert.equal(webview.posted.filter((m) => m.type === "host-data").length, 1, "only the new page's");
+  panel.dispose();
+});
+
+test("openedLine: the log line's formats", async () => {
+  const { openedLine } = await import("../src/vscode/panel.ts");
+  const base = { key: "acme/web#123", load: 1 };
+  assert.equal(openedLine({ ...base, cached: false, staged: false, data: 1150, page: 1170, shown: 1210 }), "Opened acme/web#123 in 1210 ms (data 1150 ms, page 20 ms, rendered 40 ms)");
+  assert.equal(
+    openedLine({ ...base, cached: true, staged: true, detail: 870, page: 890, shown: 980, diff: 1900, sent: 1910, changes: 4210 }),
+    "Opened acme/web#123 in 4210 ms: the page in 980 ms (detail 870 ms, page 20 ms, rendered 90 ms), the changes in 4210 ms (diff 1900 ms, rendered 2300 ms) (from cache)",
+  );
+  assert.equal(openedLine({ ...base, cached: false, staged: false, data: 1150, page: 1170 }), "Opened acme/web#123 in ? ms (data 1150 ms, page 20 ms, rendered ? ms)", "a page that didn't say it drew");
+});
+
+test("hostShim: the diff reaches the page as a diffline-host event; the page's rendered message names its load", async () => {
+  const { hostShim } = await import("../src/vscode/page.ts");
+  const listeners: Array<(e: { data: unknown }) => void> = [];
+  const events: any[] = [];
+  const sent: any[] = [];
+  const window: Record<string, any> = { addEventListener: (_: string, fn: any) => listeners.push(fn), dispatchEvent: (e: any) => events.push(e.detail) };
+  vm.runInNewContext(hostShim("o/r#1", 7), { window, acquireVsCodeApi: () => ({ postMessage: (m: unknown) => sent.push(m) }), CustomEvent: class { detail: unknown; constructor(_t: string, init: { detail: unknown }) { this.detail = init.detail; } } });
+  const message = { type: "host-data", data: { files: [] }, list: [] };
+  for (const fn of listeners) fn({ data: message });
+  assert.deepEqual(events, [message]);
+  window.DIFFLINE_HOST.rendered({ stage: "changes", ms: { start: 1, render: 2 } });
+  window.DIFFLINE_HOST.rendered({ stage: "error", error: "x".repeat(500) });
+  assert.deepEqual(JSON.parse(JSON.stringify(sent[0])), { type: "rendered", key: "o/r#1", load: 7, stage: "changes", ms: { start: 1, render: 2 } });
+  assert.equal(sent[1].error.length, 300, "an error is cut short");
 });

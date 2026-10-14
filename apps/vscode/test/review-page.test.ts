@@ -42,6 +42,8 @@ interface Options {
   data?: (d: any) => void;
   state?: Record<string, unknown> | ((d: any) => Record<string, unknown>);
   route?: string;
+  /** Open the page before its diff, as the extension does when the diff isn't built yet: send it with host-data. */
+  pending?: boolean;
 }
 
 function openPage(o: Options = {}) {
@@ -51,27 +53,37 @@ function openPage(o: Options = {}) {
   const live = { repo: "acme/web", number: 12, url: pr.url, github: true, githubError: null, viewer, pr, threads: [], loadedAt: new Date().toISOString(), agent: null, state: typeof o.state === "function" ? o.state(data) : (o.state ?? null), list: [], ...o.live };
   const nodes: Record<string, ReturnType<typeof el>> = Object.fromEntries(["app", "overlay", "toasts", "notice", "push-foot", "stream"].map((id) => [id, el(id)]));
   const listeners: Record<string, Array<(e: any) => void>> = {};
-  const on = (prefix: string) => (type: string, fn: (e: any) => void) => { (listeners[prefix + type] ||= []).push(fn); };
+  // Listeners go when their start of the page ends (the page starts again when its diff arrives).
+  const on = (prefix: string) => (type: string, fn: (e: any) => void, opts?: { signal?: AbortSignal }) => {
+    const list = (listeners[prefix + type] ||= []);
+    list.push(fn);
+    opts?.signal?.addEventListener("abort", () => list.splice(list.indexOf(fn), 1));
+  };
   const calls: Array<{ method: string; path: string; body: any }> = [];
+  const rendered: any[] = [];
+  const toasts: string[] = [];
   const location = { hash: o.route ? `#${o.route}` : "" };
   const mq = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   const window: Record<string, any> = {
-    REVIEW_DATA: data, DIFFLINE_LIVE: live,
-    DIFFLINE_HOST: { api: async (method: string, p: string, body: unknown) => { calls.push({ method, path: p, body: JSON.parse(JSON.stringify(body ?? null)) }); return { ok: true }; }, reload() {}, open() {}, runAgents() {}, metrics() {} },
+    REVIEW_DATA: o.pending ? { version: 1, pending: true, repo: "acme/web", base: data.base, head: data.head, mergeBase: "", since: null, commits: [], files: [], workspace: {} } : data,
+    DIFFLINE_LIVE: live,
+    DIFFLINE_HOST: { api: async (method: string, p: string, body: unknown) => { calls.push({ method, path: p, body: JSON.parse(JSON.stringify(body ?? null)) }); return { ok: true }; }, reload() {}, open() {}, runAgents() {}, metrics() {}, rendered: (m: unknown) => void rendered.push(m) },
     location, history: { replaceState: (_a: unknown, _b: unknown, h: string) => { location.hash = h; } },
     matchMedia: mq, localStorage: { getItem: () => null, setItem() {} }, navigator: { platform: "MacIntel", userAgent: "node" },
     addEventListener: on(""), removeEventListener() {}, scrollTo() {}, scrollY: 0, innerHeight: 900,
     getComputedStyle: () => ({ paddingTop: "0", position: "static" }), requestAnimationFrame: (f: () => void) => setTimeout(f, 0),
     setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
-    MutationObserver: class { observe() {} }, Element: class {}, CustomEvent: class {},
-    console,
+    MutationObserver: class { observe() {} disconnect() {} }, Element: class {}, CustomEvent: class {},
+    AbortController, performance, console,
   };
   window.window = window;
   window.document = {
     documentElement: { ...el("html"), dataset: {} }, body: el("body"),
     getElementById: (id: string) => nodes[id] || null,
     querySelector: (s: string) => (/^#[\w-]+$/.test(s) ? nodes[s.slice(1)] || null : null),
-    querySelectorAll: () => [], createElement: () => el(""), addEventListener: on("doc:"), contains: () => false,
+    querySelectorAll: () => [], addEventListener: on("doc:"), contains: () => false,
+    // Toasts are made as elements; keep what they say.
+    createElement: () => { const t = el(""); Object.defineProperty(t, "innerHTML", { set: (v: string) => void toasts.push(v.replace(/<[^>]+>/g, "")), get: () => "" }); return t; },
     hasFocus: () => true, visibilityState: "visible", activeElement: null,
   };
   vm.runInNewContext(APP, window, { filename: "app.js" });
@@ -80,7 +92,7 @@ function openPage(o: Options = {}) {
     for (const fn of listeners["doc:click"] || []) fn({ target: { closest: (sel: string) => (sel === "[data-act]" ? target : null) }, preventDefault() {} });
   };
   return {
-    data, calls, nodes,
+    data, calls, nodes, rendered, toasts, listeners,
     html: () => nodes.app.innerHTML,
     text: () => nodes.app.innerHTML.replace(/<[^>]+>/g, "").replace(/\s+/g, " "),
     host: (m: unknown) => { for (const fn of listeners["diffline-host"] || []) fn({ detail: m }); },
@@ -277,4 +289,70 @@ test("review page: Home rows show your review, what changed since, the state and
   like(rows[7], /PR 7 #7 · Your review was dismissed 1d ago/);
   unlike(html, /review required/);
   like(html, /<h2 class="eyebrow">Recently merged or closed<\/h2>/);
+});
+
+test("review page: opened before its diff, it shows the rest with Loading the changes…, keeps what depends on the diff, and starts again in place when it arrives", async () => {
+  const agent = {
+    ranAt: ago(0.1), commit: "c".repeat(40), lede: "Start with the promo code rules.", checked: [],
+    agents: [{ id: "tests", name: "Tests agent", short: "Tests", focus: "Tests" }],
+    findings: [{ id: "tests-1", agent: "tests", severity: "high", confidence: "Likely", label: "", path: "src/promotions/promo.ts", match: 'export type PromoKind = "percent" | "fixed";', title: "Kinds are unchecked", body: "b", comment: "c" }],
+  };
+  const draft = { id: "d1", f: 9, path: "src/promotions/promo.ts", k: "n3", text: "Why fixed?", label: "question", lineText: 'export type PromoKind = "percent" | "fixed";' };
+  const page = openPage({
+    pending: true,
+    pr: { additions: 412, deletions: 37, changedFiles: 13 },
+    live: { agent, threads: [{ id: "t", path: "src/promotions/promo.ts", line: 3, side: "RIGHT", resolved: false, outdated: false, comments: [{ ...alex, body: "Hm", createdAt: ago(1) }] }] },
+    state: (d) => ({ ...allReviewed(d), drafts: [draft] }),
+  });
+  const saved = JSON.parse(JSON.stringify(page.calls.length ? page.calls : []));
+  assert.deepEqual(saved, [], "opening saves nothing");
+  let text = page.text();
+  like(text, /Loading the changes…/);
+  like(text, /building the diff of 13 files/);
+  like(text, /13 files · \+412 −37 · loading the changes…/);
+  like(text, /Agents reviewed this before you/);
+  like(text, /1 finding, listed with the changes/);
+  like(text, /Start with the promo code rules\./);
+  unlike(page.html(), /class="risk /, "no risk score without the diff");
+  like(page.html(), /data-tab="changes" aria-selected="true">Changes<span class="tab-count">13<\/span>/);
+  like(page.html(), /data-tab="discussion" aria-selected="false">Discussion<span class="tab-count">1<\/span>/, "GitHub's open threads");
+  assert.deepEqual(page.rendered.map((m) => m.stage), ["page"]);
+
+  // What needs the diff waits for it; settings that don't still save, without touching what you reviewed or your drafts.
+  page.click("finish");
+  assert.match(page.toasts.at(-1) ?? "", /The changes are still loading/);
+  page.click("split", { split: "1" });
+  await new Promise((r) => setTimeout(r, 400));
+  const put = page.calls.filter((c) => c.path === "/state").at(-1)!;
+  assert.equal(put.body.prefs.split, true);
+  assert.deepEqual(put.body.reviewedIds, allReviewed(page.data).reviewedIds, "your review marks stay as saved");
+  assert.deepEqual(put.body.drafts, [draft], "your drafts stay as saved");
+
+  // The diff arrives: the page starts again in place with it, once, keeping what changed meanwhile.
+  const clicks = page.listeners["doc:click"].length;
+  page.host({ type: "host-data", data: page.data, list: [] });
+  text = page.text();
+  unlike(text, /Loading the changes…/);
+  like(text, /13 files · \+\d[\d,]* −\d[\d,]* · about \d+ (min|hours) to review/);
+  like(text, /Kinds are unchecked/, "the finding, on its line");
+  like(page.html(), /data-split="1" aria-pressed="true"/, "the setting changed while it loaded");
+  like(page.html(), /class="risk risk-/);
+  assert.equal(page.listeners["doc:click"].length, clicks, "the first start's listeners went with it");
+  assert.deepEqual(page.rendered.map((m) => m.stage), ["page", "changes"]);
+  assert.equal(typeof page.rendered[1].ms.render, "number");
+
+  // A second copy of the diff changes nothing.
+  page.host({ type: "host-data", data: page.data, list: [] });
+  assert.deepEqual(page.rendered.map((m) => m.stage), ["page", "changes"]);
+});
+
+test("review page: when the diff doesn't load, the Changes tab says why and offers to try again", () => {
+  const page = openPage({ pending: true, pr: { changedFiles: 2 } });
+  page.host({ type: "host-data", error: "Fetching pull request #12 timed out" });
+  const text = page.text();
+  like(text, /The changes didn't load/);
+  like(text, /Fetching pull request #12 timed out/);
+  like(page.html(), /data-act="live-refresh">Try again/);
+  page.click("next-unreviewed");
+  assert.match(page.toasts.at(-1) ?? "", /The changes didn(&#39;|')t load/);
 });

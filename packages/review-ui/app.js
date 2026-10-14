@@ -1,10 +1,35 @@
 /* Diffline's review page. It runs in the VS Code extension's webview, which sets three globals before this script:
  * window.REVIEW_DATA (the diff), window.DIFFLINE_LIVE (the pull request from GitHub, the agents' results and the saved
- * review state) and window.DIFFLINE_HOST (the bridge back to the extension). */
+ * review state) and window.DIFFLINE_HOST (the bridge back to the extension).
+ *
+ * The page can open before its diff is built: REVIEW_DATA is then a stand-in with `pending: true` and no files. The page
+ * shows everything that doesn't need the diff (description, discussion, checks, workflow, the agent briefing) with
+ * "Loading the changes…" where the diff goes, and saves nothing that depends on it. When the extension sends the diff
+ * ("host-data"), the page starts again in place with it (start below): same document, same review state, same tab and
+ * scroll position, no reload. */
 (() => {
 "use strict";
 
+// When this script started, in ms since the page began loading: the HTML and its inline data are parsed by then.
+const clock = window.performance && typeof window.performance.now === "function" ? window.performance : null;
+const SCRIPT_START = clock ? clock.now() : 0;
+// An error while the page draws reaches the extension's log, instead of a page that never says it drew.
+window.addEventListener("error", (e) => {
+  try { if (window.DIFFLINE_HOST && typeof window.DIFFLINE_HOST.rendered === "function") window.DIFFLINE_HOST.rendered({ stage: "error", error: String((e && e.message) || "error") }); } catch { /* best effort */ }
+});
+
+// Each start of the page owns its listeners and timers through one signal; starting again ends the one before.
+let life = null;
+function start(stage, started) {
+  if (life) life.abort();
+  life = new AbortController();
+  boot(life.signal, stage, started);
+}
+
+function boot(signal, stage, started) {
 const D = window.REVIEW_DATA;
+// The page opened before its diff: see the top of this file. D.error says why the diff didn't load, when it didn't.
+const PENDING = !!D && D.pending === true;
 const LIVE = window.DIFFLINE_LIVE;
 const HOST = window.DIFFLINE_HOST;
 const app = document.getElementById("app");
@@ -40,7 +65,8 @@ function replaceHTML(target, html) {
 }
 
 // The review state (drafts, review marks, decisions) belongs to the page. The extension saves it on this machine.
-const liveState = LIVE.state || {};
+// Shared with the next start of the page (when the diff arrives), so nothing saved in between is lost.
+const liveState = LIVE.state = LIVE.state || {};
 let liveSync = "saved", liveSyncError = "", flushTimer = null;
 
 const api = (method, path, body) => HOST.api(method, path, body);
@@ -541,7 +567,8 @@ const S = {
   notice: null,           // the latest change on GitHub since the page was built (host-pr-changed)
   noticeHidden: false,    // its bar was dismissed (the change still counts, e.g. for posting on a merged one)
   reviewed: new Set((store.read("reviewedIds", null) || defaultReviewed().map((k) => HUNK.get(k).h.id)).map((id) => HUNK_ID.get(id)).filter(Boolean)),
-  drafts: (store.read("drafts", []) || []).map(placeDraft).filter((d) => d.replyTo || d.detached || (d.f != null && files[d.f])),
+  // While the diff loads there are no lines to place drafts on: they stay as saved until it's in.
+  drafts: PENDING ? store.read("drafts", []) || [] : (store.read("drafts", []) || []).map(placeDraft).filter((d) => d.replyTo || d.detached || (d.f != null && files[d.f])),
   threadActions: store.read("threadActions", {}) || {},
   threads: liveThreads(),
   opened: new Set(),      // reviewed hunks the reader unfolded
@@ -583,14 +610,17 @@ if (S.drafts.some((d) => d.placed)) {
 rebuildChapters();
 
 function save() {
-  store.write("reviewedIds", [...S.reviewed].map((k) => HUNK.get(k)?.h.id).filter(Boolean));
-  store.write("drafts", S.drafts.map((d) => (d.f != null && files[d.f] ? { ...d, path: files[d.f].path } : d)));
+  // While the diff loads, what you reviewed, your drafts' places and the reading order aren't known: what's saved stays.
+  if (!PENDING) {
+    store.write("reviewedIds", [...S.reviewed].map((k) => HUNK.get(k)?.h.id).filter(Boolean));
+    store.write("drafts", S.drafts.map((d) => (d.f != null && files[d.f] ? { ...d, path: files[d.f].path } : d)));
+    store.write("plan", S.plan);
+    store.write("planState", S.planState);
+  }
   store.write("threadActions", S.threadActions);
   store.write("findings", S.findings);
   store.write("desc", S.desc);
   store.write("pushSummary", S.pushSummary);
-  store.write("plan", S.plan);
-  store.write("planState", S.planState);
   store.write("prefs", { fold: S.fold, split: S.split, bannerHead: S.bannerHead, brief: S.brief, grouping: S.grouping });
 }
 
@@ -629,14 +659,15 @@ function takeActiveTime() {
 
 function watchActivity() {
   const input = () => { tickActive(); lastInput = Date.now(); };
-  ["pointerdown", "keydown", "wheel", "touchstart"].forEach((t) => window.addEventListener(t, input, { passive: true, capture: true }));
+  ["pointerdown", "keydown", "wheel", "touchstart"].forEach((t) => window.addEventListener(t, input, { passive: true, capture: true, signal }));
   let moved = 0;
-  window.addEventListener("pointermove", () => { const now = Date.now(); if (now - moved > 5000) { moved = now; input(); } }, { passive: true });
-  window.addEventListener("focus", () => { tickActive(); pageFocused = true; lastInput = Date.now(); });
-  window.addEventListener("blur", () => { tickActive(); pageFocused = false; saveActive(); });
-  document.addEventListener("visibilitychange", () => saveActive());
-  window.addEventListener("pagehide", () => saveActive());
-  setInterval(saveActive, 30_000);
+  window.addEventListener("pointermove", () => { const now = Date.now(); if (now - moved > 5000) { moved = now; input(); } }, { passive: true, signal });
+  window.addEventListener("focus", () => { tickActive(); pageFocused = true; lastInput = Date.now(); }, { signal });
+  window.addEventListener("blur", () => { tickActive(); pageFocused = false; saveActive(); }, { signal });
+  document.addEventListener("visibilitychange", () => saveActive(), { signal });
+  window.addEventListener("pagehide", () => saveActive(), { signal });
+  const timer = setInterval(saveActive, 30_000);
+  signal.addEventListener("abort", () => clearInterval(timer));
 }
 
 /* ---------- Derived review state ---------- */
@@ -704,7 +735,8 @@ const totalMinutes = () => minutesFor(ORDER);
 // "16 min", or "about 3 hours" for long reads.
 const readTime = (min) => (min < 90 ? `${min} min` : `${Math.round(min / 60)} hours`);
 const remainingMinutes = () => minutesFor(ORDER.filter((k) => !S.reviewed.has(k)));
-const openThreadCount = () => S.threads.filter((t) => t.state !== "resolved").length;
+// Threads sit on diff lines; while the diff loads, GitHub's count stands in.
+const openThreadCount = () => (PENDING ? (LIVE.threads || []).filter((t) => !t.resolved).length : S.threads.filter((t) => t.state !== "resolved").length);
 const decisionOf = (id) => (validDecision(id, S.findings[id]) ? S.findings[id] : null);
 const findingState = (x) => { const rec = decisionOf(x.id); return (rec && rec.state) || "open"; };
 // A decision made when an earlier agent run flagged the same line.
@@ -1018,6 +1050,8 @@ const checkDetail = (c) => (c.status !== "COMPLETED" ? ({ QUEUED: "Queued", IN_P
 function liveStages() {
   const p = LIVE.pr || {};
   const out = [];
+  // While the diff loads, findings aren't on their lines yet: count them all, and offer nothing to jump to.
+  const found = PENDING ? FINDINGS : FIND;
 
   const checks = (p.checks || []).map((c, i) => ({ id: `ck-${i}`, name: c.name || "check", st: checkState(c), detail: c.description || checkDetail(c), url: c.url }));
   const failed = checks.filter((g) => g.st === "blocked"), running = checks.filter((g) => g.st === "running"), passed = checks.filter((g) => g.st === "passed");
@@ -1030,14 +1064,14 @@ function liveStages() {
     caption: !checks.length ? (LIVE.github ? "No checks" : "Unavailable") : failed.length ? `${plural(failed.length, "check")} failing` : running.length ? `${passed.length} of ${checks.length} passed, ${running.length} running` : `All ${checks.length} passed` });
 
   if (AGENTS.length) {
-    const high = FIND.filter((x) => x.severity === "high").length;
+    const high = found.filter((x) => x.severity === "high").length;
     out.push({ id: "agents", name: "Agent review", short: "Agents", st: "done", note: STAGE_NOTE_AGENTS,
       gates: AGENTS.map((a) => {
-        const n = FIND.filter((x) => x.agent === a.id).length;
+        const n = found.filter((x) => x.agent === a.id).length;
         return { id: `agent-${a.id}`, agent: true, name: a.name, role: a.focus, st: "passed",
           detail: a.id === "guide" ? `Drafted ${plural((PR.plan || []).length, "chapter")}` : n ? plural(n, "finding") : "Nothing to flag" };
       }),
-      caption: FIND.length ? `${plural(FIND.length, "finding")}${high ? `, ${high} high` : ""}` : "Nothing flagged" });
+      caption: found.length ? `${plural(found.length, "finding")}${high ? `, ${high} high` : ""}` : "Nothing flagged" });
   } else {
     out.push({ id: "agents", name: "Agent review", short: "Agents", st: "upcoming", caption: "Not run yet",
       gates: [{ id: "agent-none", agent: true, name: "No agent run for this pull request", st: "upcoming",
@@ -1059,10 +1093,10 @@ function liveStages() {
       detail: r.submittedAt ? ago(r.submittedAt) : "" });
   });
   gates.push(youGate());
-  const hi = highOpen();
-  if (FIND.length) gates.push({ id: "findings", agent: true, name: "Agent findings", role: "A person decides on each high finding", st: hi.length ? "waiting" : "passed", mine: hi.length > 0,
+  const hi = found.filter((x) => x.severity === "high" && findingState(x) === "open");
+  if (found.length) gates.push({ id: "findings", agent: true, name: "Agent findings", role: "A person decides on each high finding", st: hi.length ? "waiting" : "passed", mine: hi.length > 0,
     detail: hi.length ? (hi.length === 1 ? "1 high finding needs your decision" : `${hi.length} high findings need your decision`) : "Every high finding has a decision",
-    action: hi.length ? { act: "go-finding", id: hi[0].id, label: "Decide" } : null });
+    action: hi.length && !PENDING ? { act: "go-finding", id: hi[0].id, label: "Decide" } : null });
   const verdict = reviewVerdict();
   // Merged or closed, the review is over: done or closed, whatever GitHub last said about it.
   out.push({ id: "review", name: "Review", gates,
@@ -1767,22 +1801,44 @@ function prHeadHTML() {
   const del = files.reduce((n, f) => n + f.deletions, 0);
   const cur = ss.find((s) => s.st !== "done");
   return `<section class="pr-head" id="pr-head">
-    <div class="pr-eyebrow"><span class="state ${st.cls}">${st.label}</span>${riskPillHTML(currentRisk())}<span class="mono dim">${esc(PR.repo)} #${PR.number}</span></div>
+    <div class="pr-eyebrow"><span class="state ${st.cls}">${st.label}</span>${PENDING ? "" : riskPillHTML(currentRisk())}<span class="mono dim">${esc(PR.repo)} #${PR.number}</span></div>
     <h1 class="pr-title">${esc(PR.title)}</h1>
     ${statusLineHTML()}
     <p class="pr-meta">${avatar(PR.author, "sm")}<span>${(LIVE.pr || {}).state === "MERGED"
         ? `${ownPR() ? "Your" : `<b>${esc(PEOPLE[PR.author].name)}</b>'s`} <code class="ref">${esc(D.head.ref)}</code> was merged into <code class="ref">${esc(D.base.ref)}</code>`
         : `<b>${esc(PEOPLE[PR.author].name)}</b> ${(LIVE.pr || {}).state === "CLOSED" ? "wanted to merge" : "wants to merge"} <code class="ref">${esc(D.head.ref)}</code> into <code class="ref">${esc(D.base.ref)}</code>`}</span>
-      <span>${plural(commits.length, "commit")} · ${plural(files.length, "file")} · <span class="n-add">+${num(add)}</span> <span class="n-del">−${num(del)}</span> · about ${readTime(totalMinutes())} to review</span></p>
+      <span>${PENDING ? pendingSizeHTML() : `${plural(commits.length, "commit")} · ${plural(files.length, "file")} · <span class="n-add">+${num(add)}</span> <span class="n-del">−${num(del)}</span> · about ${readTime(totalMinutes())} to review`}</span></p>
     ${trackHTML(ss)}
     <p class="track-sum">${trackSumHTML(cur)}</p>
     <nav class="tabs" role="tablist" aria-label="Pull request">
-      ${tabBtn("changes", "Changes", files.length)}${tabBtn("map", "Map", null)}${tabBtn("discussion", "Discussion", openThreadCount())}${tabBtn("workflow", "Workflow", `${ss.filter((s) => s.st === "done").length}/${ss.length}`)}
+      ${tabBtn("changes", "Changes", PENDING ? ((LIVE.pr || {}).changedFiles ?? null) : files.length)}${tabBtn("map", "Map", null)}${tabBtn("discussion", "Discussion", openThreadCount())}${tabBtn("workflow", "Workflow", `${ss.filter((s) => s.st === "done").length}/${ss.length}`)}
     </nav>
   </section>`;
 }
 
+// The pull request's size from GitHub, while the diff loads.
+function pendingSizeHTML() {
+  const p = LIVE.pr || {};
+  return [
+    p.changedFiles != null ? plural(p.changedFiles, "file") : "",
+    p.additions != null ? `<span class="n-add">+${num(p.additions)}</span> <span class="n-del">−${num(p.deletions || 0)}</span>` : "",
+    D.error ? "the changes didn't load" : "loading the changes…",
+  ].filter(Boolean).join(" · ");
+}
+
 /* ---------- Changes tab ---------- */
+
+// The Changes and Map tabs while the diff loads (see the top of this file): the briefing, and the loading state, or why
+// the diff didn't load with a way to try again.
+function pendingHTML() {
+  const n = (LIVE.pr || {}).changedFiles;
+  const card = D.error
+    ? `<div class="pending is-error" id="pending" role="alert">${icon("alert")}<h2>The changes didn't load</h2><p>${esc(D.error)}</p>
+        <button type="button" class="btn sm" data-act="live-refresh">Try again</button></div>`
+    : `<div class="pending" id="pending" role="status"><span class="spin" aria-hidden="true"></span><h2>Loading the changes…</h2>
+        <p>Diffline is getting the commits and building the diff${n != null ? ` of ${plural(n, "file")}` : ""}. ${S.tab === "map" ? "The map shows" : "It shows here"} as soon as it's ready; the description, discussion and workflow are here meanwhile.</p></div>`;
+  return `<div class="pending-wrap">${S.tab === "changes" ? briefHTML() : ""}${card}</div>`;
+}
 
 function changesHTML() {
   return `<div class="changes">
@@ -1890,6 +1946,7 @@ async function copyAgentReview(mode) {
 }
 
 function briefHTML() {
+  if (PENDING && AG) return pendingBriefHTML();
   if (!FIND.length && !CHECKED.length && !DESC_ITEMS.length) {
     return `<section class="brief is-closed" id="brief" aria-label="Agent review"><header class="brief-head">${agentAv("lg")}<div class="brief-title"><h2>No agent review yet</h2>
       <p>Run the agents to check the description, set a reading order, draw the flow and look for problems.</p>${runNoteHTML()}</div>${hostRunHTML("Run agents")}</header></section>`;
@@ -1923,6 +1980,18 @@ function briefHTML() {
     <p class="brief-note">${icon("info")}<span>${ownPR()
       ? "Agents don't approve or block. It's your pull request, so treat this as your check before anyone else reviews it. Findings are never posted on their own."
       : `Agents don't approve or block. You decide on every finding, and ${esc(PEOPLE[PR.author].short)} only sees what you post.`}</span></p>
+  </section>`;
+}
+
+// The briefing while the diff loads: findings sit on diff lines, so they're counted here and listed once it's in.
+function pendingBriefHTML() {
+  return `<section class="brief" id="brief" aria-label="Agent review">
+    <header class="brief-head">${agentAv("lg")}<div class="brief-title"><h2>Agents reviewed this before you</h2>
+      <p>${AGENTS.length} agents ran on <code>${esc(String(AG.commit || "").slice(0, 7))}</code> ${AGENT_RUN_AT ? ago(AGENT_RUN_AT) : ""} · ${plural(FINDINGS.length, "finding")}${FINDINGS.length ? ", listed with the changes" : ""}${agentsBehind() ? ` · <b>an older push than the one you're reviewing</b>` : ""}</p>${runNoteHTML()}</div>
+      ${agentCopyHTML()}
+      ${hostRunHTML(agentsBehind() ? "Run again" : "Rerun")}</header>
+    ${BRIEF_LEDE ? `<p class="brief-lede">${inline(BRIEF_LEDE)}</p>` : ""}
+    ${descSummaryHTML()}
   </section>`;
 }
 
@@ -2560,7 +2629,7 @@ function dockHTML() {
   const c = counts();
   return `<nav class="dock" id="dock" aria-label="Review actions">
     <button type="button" class="dock-btn" data-act="guide-sheet">${icon("list")}<span>Guide</span></button>
-    <button type="button" class="dock-btn" data-act="next-unreviewed">${ring(progress(), 24)}<span>${c.todo ? "Next" : "Done"}</span></button>
+    <button type="button" class="dock-btn" data-act="next-unreviewed">${ring(PENDING ? 0 : progress(), 24)}<span>${c.todo || PENDING ? "Next" : "Done"}</span></button>
     <button type="button" class="dock-btn" data-act="drafts-sheet">${icon("message")}<span>Comments</span>${S.drafts.length ? `<i class="badge">${S.drafts.length}</i>` : ""}</button>
     ${finishBtnHTML("dock")}
   </nav>`;
@@ -3035,8 +3104,10 @@ function discussionHTML() {
     </div>
     <aside class="disc-side">
       <section class="side-card"><h3>Reviewers</h3><ul class="people">${reviewersHTML()}</ul></section>
-      <section class="side-card"><h3>Threads</h3><p class="dim">${open.length} open, ${done.length} resolved</p>
-        <ul class="tlist">${[...open, ...done].map(threadItemHTML).join("")}</ul></section>
+      <section class="side-card"><h3>Threads</h3>${PENDING
+        ? `<p class="dim">${plural((LIVE.threads || []).length, "thread")} on lines of the code${(LIVE.threads || []).length ? ", listed here once the changes load" : ""}.</p>`
+        : `<p class="dim">${open.length} open, ${done.length} resolved</p>
+        <ul class="tlist">${[...open, ...done].map(threadItemHTML).join("")}</ul>`}</section>
       ${FIND.length ? `<section class="side-card"><h3>Agent findings</h3><p class="dim">${openFindings().length} open, ${FIND.length - openFindings().length} decided</p><ul class="tlist">${FIND.map(findingItemHTML).join("")}</ul></section>` : ""}
     </aside>
   </div>`;
@@ -3540,7 +3611,7 @@ function rowBadges(it) {
 const LIVE_KEY = `${LIVE.repo}#${LIVE.number}`;
 const itemKey = (it) => it.key || `${it.repo || LIVE.repo}#${it.number}`;
 const liveRepos = () => [...new Set((LIVE.list || []).map((it) => it.repo || LIVE.repo))];
-const liveRisk = (it) => (itemKey(it) === LIVE_KEY ? currentRisk() : it.riskInput ? computeRisk(it.riskInput) : null);
+const liveRisk = (it) => (itemKey(it) === LIVE_KEY && !PENDING ? currentRisk() : it.riskInput ? computeRisk(it.riskInput) : null);
 const byRisk = (a, b) => ((liveRisk(b) || { score: -1 }).score - (liveRisk(a) || { score: -1 }).score);
 const isWaitingOnYou = (it) => it.state === "OPEN" && !it.own && it.viewerReview !== "APPROVED";
 
@@ -3913,6 +3984,7 @@ function showChange(m) {
 function tabHTML() {
   if (S.tab === "workflow") return workflowHTML();
   if (S.tab === "discussion") return discussionHTML();
+  if (PENDING) return pendingHTML();
   if (S.tab === "map") return mapHTML();
   return changesHTML();
 }
@@ -4925,10 +4997,13 @@ const ACTIONS = {
 /* ---------- Events ---------- */
 
 let lastSwipe = 0;
+// What waits for the diff while it loads: posting, moving through the hunks, files and findings, and the comment list.
+const NEEDS_DIFF = new Set(["finish", "next-unreviewed", "guide-sheet", "palette", "drafts-sheet", "go-finding", "go-brief", "tour-start", "risk"]);
 document.addEventListener("click", (e) => {
   if (agentMenuOpen() && !e.target.closest("#agent-copy")) agentMenu(false);
   if (Date.now() - lastSwipe < 350) return;
   const el = e.target.closest("[data-act]");
+  if (el && !el.disabled && PENDING && NEEDS_DIFF.has(el.dataset.act)) { toast(D.error ? "The changes didn't load. Try again from the Changes tab." : "The changes are still loading. This works once they're in."); return; }
   if (el && !el.disabled) {
     const fn = ACTIONS[el.dataset.act];
     if (fn) { if (el.tagName === "A") e.preventDefault(); fn(el, e); return; }
@@ -4939,7 +5014,7 @@ document.addEventListener("click", (e) => {
     if (row && coarse.matches && !selecting) { selectRow(row); return; }
     if (S.sel) clearSel();
   }
-});
+}, { signal });
 
 document.addEventListener("keydown", (e) => {
   const t = e.target instanceof Element ? e.target : document.body;
@@ -4981,8 +5056,10 @@ document.addEventListener("keydown", (e) => {
     }
     return;
   }
-  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(); return; }
+  if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); if (!PENDING) openPalette(); return; }
   if (typing || mod || e.altKey || S.sheet || S.view !== "pr") return;
+  // While the diff loads, only the tab keys and the shortcut list work.
+  if (PENDING && !["1", "2", "3", "4", "?"].includes(e.key)) return;
   if (S.tab === "map" && (e.key === "j" || e.key === "k")) { e.preventDefault(); stepMapNode(e.key === "j" ? 1 : -1); return; }
   if (S.tab === "map" && e.key === "Enter" && t === document.body && S.map.sel) {
     const dg = mapDiagram();
@@ -5002,7 +5079,7 @@ document.addEventListener("keydown", (e) => {
   };
   const fn = keys[e.key];
   if (fn) { e.preventDefault(); fn(); }
-});
+}, { signal });
 
 document.addEventListener("input", (e) => {
   const t = e.target;
@@ -5018,18 +5095,18 @@ document.addEventListener("input", (e) => {
     const list = $("#palette-list");
     if (list) list.innerHTML = paletteItems(t.value);
   }
-});
+}, { signal });
 
 document.addEventListener("change", (e) => {
   const t = e.target;
   if (t.dataset && t.dataset.planFile && S.planDraft) movePlanFile(t.dataset.planFile, t.value);
   if (t.name === "decision") S.pushDecision = t.value;
-});
+}, { signal });
 
 document.addEventListener("submit", (e) => {
   e.preventDefault();
   if (e.target.id === "composer") submitComposer();
-});
+}, { signal });
 
 // Swipe a hunk to the right to mark it reviewed.
 let swipe = null;
@@ -5037,7 +5114,7 @@ document.addEventListener("pointerdown", (e) => {
   if (e.pointerType !== "touch") return;
   const rows = e.target.closest(".hunk > .rows");
   if (rows) swipe = { rows, hunk: rows.parentElement, x: e.clientX, y: e.clientY, dx: 0, on: false, id: e.pointerId };
-}, { passive: true });
+}, { passive: true, signal });
 document.addEventListener("pointermove", (e) => {
   if (!swipe || e.pointerId !== swipe.id) return;
   const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
@@ -5060,15 +5137,15 @@ function endSwipe() {
   s.hunk.classList.remove("is-swiping", "swipe-armed");
   if (s.dx > 84) toggleHunk(s.hunk.dataset.h);
 }
-document.addEventListener("pointerup", endSwipe);
-document.addEventListener("pointercancel", endSwipe);
+document.addEventListener("pointerup", endSwipe, { signal });
+document.addEventListener("pointercancel", endSwipe, { signal });
 
 let ticking = false;
 window.addEventListener("scroll", () => {
   if (ticking) return;
   ticking = true;
   requestAnimationFrame(() => { ticking = false; onScroll(); });
-}, { passive: true });
+}, { passive: true, signal });
 
 function onScroll() {
   if (S.view !== "pr") return;
@@ -5087,9 +5164,9 @@ function onScroll() {
 }
 
 if (wide.addEventListener) {
-  wide.addEventListener("change", () => { if (S.view === "pr" && S.tab === "changes" && S.split) refreshStream(); });
+  wide.addEventListener("change", () => { if (S.view === "pr" && S.tab === "changes" && S.split) refreshStream(); }, { signal });
   // Box details sit beside the map on wide screens and open as a sheet on narrow ones.
-  narrow.addEventListener("change", () => { if (S.view === "pr" && S.tab === "map") { if (S.sheet && S.sheet.id === "mapnode") closeSheet(true); refreshMap(); } });
+  narrow.addEventListener("change", () => { if (S.view === "pr" && S.tab === "map") { if (S.sheet && S.sheet.id === "mapnode") closeSheet(true); refreshMap(); } }, { signal });
 }
 
 function routeFromHash() {
@@ -5098,13 +5175,14 @@ function routeFromHash() {
   else if (h === "metrics" || (!h && LIVE.startView === "metrics")) S.view = "metrics";
   else if (["changes", "map", "discussion", "workflow"].includes(h)) { S.view = "pr"; S.tab = h; }
 }
-window.addEventListener("hashchange", () => { tickActive(); routeFromHash(); render(); });
+window.addEventListener("hashchange", () => { tickActive(); routeFromHash(); render(); }, { signal });
 // The VS Code extension's Home: show the list, with a fresh one from the sidebar.
 // "host-view": the sidebar's Home, which shows the list. "host-list": the sidebar's grouping or order changed; an open
 // list redraws in place, and a review keeps the new list for when the reader goes back to it.
 window.addEventListener("diffline-host", (e) => {
   const m = e.detail || {};
   if (m.type === "host-pr-changed") { showChange(m); return; }
+  if (m.type === "host-data") { takeData(m); return; }
   if (m.type !== "host-view" && m.type !== "host-list") return;
   if (Array.isArray(m.list)) LIVE.list = m.list;
   if (Array.isArray(m.groups)) LIVE.groups = m.groups;
@@ -5121,7 +5199,30 @@ window.addEventListener("diffline-host", (e) => {
   const view = m.view === "metrics" ? "metrics" : "inbox";
   if (S.view === view) render(); else setView(view);
   window.scrollTo(0, 0);
-});
+}, { signal });
+
+// "host-data": the diff for a page that opened without it, or why it didn't load. With the diff, the page starts again
+// in place (see the top of this file), keeping the review state, the tab (it's in the address's hash) and the scroll.
+function takeData(m) {
+  if (!PENDING) return;
+  if (m.error) {
+    D.error = String(m.error);
+    if (S.view === "pr") {
+      const y = window.scrollY;
+      render();
+      window.scrollTo(0, y);
+    }
+    return;
+  }
+  if (!m.data || !Array.isArray(m.data.files)) return;
+  if (Array.isArray(m.list)) LIVE.list = m.list;
+  if (Array.isArray(m.groups)) LIVE.groups = m.groups;
+  const at = clock ? clock.now() : 0;
+  const y = window.scrollY;
+  window.REVIEW_DATA = m.data;
+  start("changes", at);
+  window.scrollTo(0, y);
+}
 
 /* ---------- Start ---------- */
 
@@ -5133,8 +5234,31 @@ try {
 applyHostTheme();
 // In VS Code the page uses the editor's fonts (and doesn't load its web font).
 document.documentElement.classList.add("in-vscode");
-new MutationObserver(applyHostTheme).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+const themeWatch = new MutationObserver(applyHostTheme);
+themeWatch.observe(document.body, { attributes: true, attributeFilter: ["class"] });
 routeFromHash();
 render();
 watchActivity();
+// Starting again ends this start: its listeners go with the signal; its timers, observers and open sheet go here.
+signal.addEventListener("abort", () => {
+  saveActive();
+  if (S.sheet) closeSheet(true);
+  if (dgObserver) dgObserver.disconnect();
+  hostTheme.disconnect();
+}, { signal });
+reportRendered(stage, started);
+}
+
+/* The extension logs how long opening a review took ("Opened <key> in N ms (…)"): the page says when it has drawn,
+   with its own timings: when it started (for the first start, after the HTML and its inline data were parsed; when the
+   diff arrives, when it got it) and how long building its model, drawing and laying it out took from there. It says
+   so at once rather than after the next frame: a panel that's hidden, or a window that's covered, draws no frames. */
+function reportRendered(stage, started) {
+  const host = window.DIFFLINE_HOST;
+  if (!clock || !host || typeof host.rendered !== "function") return;
+  void document.body.offsetHeight; // lay the page out now, as the first frame would
+  try { host.rendered({ stage, ms: { start: Math.round(started), render: Math.round(clock.now() - started) } }); } catch { /* timing is best effort */ }
+}
+
+start("page", SCRIPT_START);
 })();

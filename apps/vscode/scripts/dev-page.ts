@@ -6,7 +6,9 @@
 // opens the page on it. With --sample, --state sets your review and the pull request's state: never, approved, changes,
 // commented, requested (re-requested after you approved), dismissed, merged, closed, rewritten (force-pushed, the
 // commit you reviewed still in the clone) or rewritten-gone (and gone from it); --notice merged|closed|reopened|commits|
-// updated sends the page a "changed on GitHub" message a second after it loads.
+// updated sends the page a "changed on GitHub" message a second after it loads. --staged <ms> opens the page without the
+// diff ("Loading the changes…") and sends it that long after, as the panel does when the diff isn't built yet;
+// --staged-error <ms> sends a failure instead.
 
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -16,7 +18,7 @@ import { fileURLToPath } from "node:url";
 const { Repos } = await import("../src/core/repos.ts");
 const { Store } = await import("../src/core/store.ts");
 const { DifflineService, parseKey } = await import("../src/core/service.ts");
-const { hostShim, scriptJson } = await import("../src/vscode/page.ts");
+const { hostShim, pendingReviewData, scriptJson } = await import("../src/vscode/page.ts");
 const { prKeyString } = await import("../src/core/types.ts");
 
 const { aggregate, GROUP_BYS, parseEvents, PERIODS, sinceDays } = await import("../src/core/metrics.ts");
@@ -186,7 +188,16 @@ window.acquireVsCodeApi = () => ({ postMessage(m) {
   if (m.type === "metricsReport") setTimeout(() => window.postMessage(METRICS ? { type: "api-result", id: m.id, ok: true, data: METRICS[(m.days ?? "all") + "|" + m.groupBy] } : { type: "api-result", id: m.id, ok: false, error: "Run dev-page with --metrics." }, "*"), 120);
   if (m.type === "metricsExport") setTimeout(() => window.postMessage({ type: "api-result", id: m.id, ok: true, data: { saved: "/tmp/diffline-export." + m.format, events: 0 } }, "*"), 10);
 } });
-const METRICS = ${scriptJson(await metricsReports())};${noticeScript()}`;
+const METRICS = ${scriptJson(await metricsReports())};${noticeScript()}${stagedScript()}`;
+
+/** --staged / --staged-error: the diff (or why it didn't load) a while after the page opens without it. */
+function stagedScript() {
+  const ms = Number(opt("staged") ?? opt("staged-error"));
+  if (!Number.isFinite(ms)) return "";
+  const message = opt("staged") !== undefined ? { type: "host-data", data, list: (live as any).list } : { type: "host-data", error: "Couldn't fetch pull request #12: the connection timed out." };
+  return `\nsetTimeout(() => window.postMessage(${scriptJson(message)}, "*"), ${ms});`;
+}
+const staged = opt("staged") !== undefined || opt("staged-error") !== undefined;
 
 /** --notice: a "changed on GitHub" message, as ReviewPanel.noticeChange sends it, a second after the page loads. */
 function noticeScript() {
@@ -209,7 +220,7 @@ async function metricsReports() {
 }
 const html = (await readFile(path.join(root, "media", "ui", "index.html"), "utf8")).replace(
   '<script src="review-data.js"></script>',
-  () => `<script>${shim}\n${hostShim(prKeyString(key))}\nwindow.REVIEW_DATA = ${scriptJson(data)};\nwindow.DIFFLINE_LIVE = ${scriptJson(live)};</script>`,
+  () => `<script>${shim}\n${hostShim(prKeyString(key))}\nwindow.REVIEW_DATA = ${scriptJson(staged ? pendingReviewData((data as any).repo || `${key.owner}/${key.name}`, { baseRefName: (data as any).base.ref, baseRefOid: (data as any).base.sha, headRefName: (data as any).head.ref, headRefOid: (data as any).head.sha }) : data)};\nwindow.DIFFLINE_LIVE = ${scriptJson(live)};</script>`,
 );
 await writeFile(path.join(out, "index.html"), html, "utf8");
 console.log(`Wrote ${path.join(out, "index.html")}: ${data.files.length} files, ${live.list.length} list items, agent ${live.agent ? "yes" : "no"}`);

@@ -22,6 +22,9 @@ function remoteRepo(url: string): string | null {
   return m ? `${m[1]}/${m[2]}`.toLowerCase() : null;
 }
 
+/** What to fetch for a pull request's head: into refs/pull/<n>/head in Diffline's own clone, else only into FETCH_HEAD. */
+const pullHeadSpec = (clone: Clone, number: number) => (clone.managed ? `+refs/pull/${number}/head:refs/pull/${number}/head` : `refs/pull/${number}/head`);
+
 export class Repos {
   private readonly storage: string;
   private readonly configured: () => Record<string, string>;
@@ -199,10 +202,13 @@ export class Repos {
    * GitHub's refs/pull/<n>/head, and the base commit by id (or the base branch if that fails).
    */
   async ensureCommits(clone: Clone, pr: { number: number; head: string; base: string | null; baseRefName: string | null }): Promise<{ fetched: boolean }> {
-    const [hasHead, hasBase] = await Promise.all([this.hasCommit(clone.path, pr.head), pr.base ? this.hasCommit(clone.path, pr.base) : Promise.resolve(true)]);
-    if (hasHead && hasBase) return { fetched: false };
+    const present = () => Promise.all([this.hasCommit(clone.path, pr.head), pr.base ? this.hasCommit(clone.path, pr.base) : Promise.resolve(true)]);
+    if ((await present()).every(Boolean)) return { fetched: false };
     return this.locked(clone.path, async () => {
-      const head = clone.managed ? `+refs/pull/${pr.number}/head:refs/pull/${pr.number}/head` : `refs/pull/${pr.number}/head`;
+      // Checked again once it's this call's turn: a fetch that held the clone meanwhile (fetchHead) may have brought them.
+      const [hasHead, hasBase] = await present();
+      if (hasHead && hasBase) return { fetched: false };
+      const head = pullHeadSpec(clone, pr.number);
       const wants = [...(hasHead ? [] : [head]), ...(hasBase || !pr.base ? [] : [pr.base])];
       const creds = clone.managed ? GH_CREDENTIALS : [];
       this.log(`Fetching ${wants.join(", ")} into ${clone.path}`);
@@ -216,6 +222,20 @@ export class Repos {
       }
       return { fetched: true };
     });
+  }
+
+  /**
+   * Fetch a pull request's head (GitHub's refs/pull/<n>/head) before its exact commits are known, so opening it doesn't
+   * wait for the fetch after GitHub answers (see DifflineService.prefetch). ensureCommits still checks the exact head and
+   * base afterwards. Returns whether the fetch worked; it never throws.
+   */
+  async fetchHead(clone: Clone, number: number): Promise<boolean> {
+    return this.locked(clone.path, async () => {
+      const creds = clone.managed ? GH_CREDENTIALS : [];
+      this.log(`Fetching pull request #${number}'s head early into ${clone.path}`);
+      const res = await run("git", [...creds, "-C", clone.path, "fetch", "--quiet", "--no-tags", clone.remote, pullHeadSpec(clone, number)], { env: GIT_ENV, timeoutMs: 10 * 60_000 });
+      return res.code === 0;
+    }).catch(() => false);
   }
 
   /** One git operation at a time per clone. */

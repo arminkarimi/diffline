@@ -689,3 +689,85 @@ test("diffline.watch.recentlyClosedDays: missing means 3 days, and the setting's
     setGhRunner(null);
   }
 });
+
+/* ---------- Opening a pull request in two parts, with its head fetched early ---------- */
+
+/** A pull request detail from GitHub, after `delayMs`, on the sample repository's branches. */
+function detailGitHub(delayMs: number, events: string[]) {
+  setGhRunner(async (args) => {
+    events.push("detail asked");
+    await new Promise((r) => setTimeout(r, delayMs));
+    events.push("detail answered");
+    const pullRequest = {
+      number: 5, title: "Add promo codes", body: "", url: "https://github.com/o/sample/pull/5", state: "OPEN", isDraft: false,
+      createdAt: "2026-10-01T10:00:00Z", updatedAt: "2026-10-02T10:00:00Z", author: { login: "dana" },
+      baseRefName: "main", headRefName: "feature/promo-codes", baseRefOid: "main", headRefOid: "feature/promo-codes",
+      additions: 40, deletions: 3, changedFiles: 4, reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] },
+      commits: { nodes: [] },
+    };
+    assert.ok(args.some((a) => a.includes("pullRequest(number")), "the detail query");
+    return { code: 0, stdout: JSON.stringify({ data: { viewer: { login: "me", name: null }, repository: { defaultBranchRef: { name: "main" }, pullRequest } } }), stderr: "", killed: false };
+  });
+}
+
+/** Repos on the sample repository that record what's asked of them, in order with the detail. */
+function recordingRepos(events: string[], has: (sha: string) => boolean) {
+  return {
+    reset() {},
+    async cleanTrees() {},
+    resolve: async () => (events.push("resolve"), { path: SAMPLE, remote: "origin", managed: false }),
+    hasCommit: async (_dir: string, sha: string) => has(sha),
+    fetchHead: async (_clone: unknown, n: number) => {
+      events.push(`fetch head #${n}`);
+      await new Promise((r) => setTimeout(r, 5));
+      events.push("fetched");
+      return true;
+    },
+    ensureCommits: async () => (events.push("ensure commits"), { fetched: false }),
+  };
+}
+
+test("loadStaged: the head is fetched while GitHub is asked; the page's part comes first, the diff after, on the exact commits", async () => {
+  const events: string[] = [];
+  detailGitHub(40, events);
+  const service = await makeService({ repos: recordingRepos(events, () => false) });
+  const key = { owner: "o", name: "sample", number: 5 };
+  try {
+    await service.pin(key); // opened by link: pinned, with no row from a search yet
+    const { first, data } = service.loadStaged(key);
+    const page = await first;
+    events.push("page part");
+    const diff = await data;
+    events.push("diff");
+    const at = (e: string) => events.indexOf(e);
+    assert.ok(at("fetch head #5") >= 0 && at("fetch head #5") < at("detail answered"), `fetched before GitHub answered: ${events.join(", ")}`);
+    assert.ok(at("ensure commits") > at("detail answered"), "the exact commits are checked once the detail says which");
+    assert.ok(at("page part") < at("diff"));
+    assert.equal(page.live.pr.title, "Add promo codes");
+    assert.equal(page.live.pr.changedFiles, 4);
+    assert.ok(diff.files.length > 0);
+
+    // Its sidebar row, from the detail: no search needed.
+    const row = service.get(key)!.summary!;
+    assert.deepEqual([row.title, row.reasons, row.changedFiles, row.requested, row.headRefOid], ["Add promo codes", ["pinned"], 4, true, "feature/promo-codes"]);
+  } finally {
+    service.dispose();
+    setGhRunner(null);
+  }
+});
+
+test("loadStaged: no early fetch when the head the list or an earlier detail knows is already in the clone", async () => {
+  const events: string[] = [];
+  detailGitHub(5, events);
+  const service = await makeService({ repos: recordingRepos(events, (sha) => sha === "feature/promo-codes") });
+  const key = { owner: "o", name: "sample", number: 5 };
+  try {
+    await service.loadStaged(key).data; // unknown head: fetched early
+    assert.equal(events.filter((e) => e.startsWith("fetch head")).length, 1);
+    await service.loadStaged(key, { cached: true }).data; // the detail from before names it, and it's there
+    assert.equal(events.filter((e) => e.startsWith("fetch head")).length, 1);
+  } finally {
+    service.dispose();
+    setGhRunner(null);
+  }
+});

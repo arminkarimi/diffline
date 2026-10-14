@@ -130,6 +130,10 @@ export interface PullRequest {
   defaultBranch: string | null;
   reviewDecision: string | null;
   mergeStateStatus: string | null;
+  /** The pull request's size, so the page can say it while the diff loads. Missing in details cached by older versions. */
+  additions?: number | null;
+  deletions?: number | null;
+  changedFiles?: number | null;
   labels: string[];
   reviewRequests: Array<{ login?: string; team?: string; name: string | null }>;
   latestReviews: Array<Person & { state: string; submittedAt: string | null }>;

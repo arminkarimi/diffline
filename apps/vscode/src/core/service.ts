@@ -7,7 +7,7 @@ import path from "node:path";
 import { runReview, type AgentRunRecord, type Harnesses, type ReviewProgress } from "../agents/review.ts";
 import { formatTokens, HarnessError, type TokenUsage } from "../agents/harness.ts";
 import { loadSettings } from "../agents/settings.ts";
-import type { AgentId, AgentFile, ListItem, LiveData, PrKey, PullRequestDetail, PullRequestSummary, PushPayload, ReviewData, Risk, RiskInput } from "./types.ts";
+import type { AgentId, AgentFile, ListItem, LiveData, PrKey, PullRequestDetail, PullRequestSummary, PushPayload, ReviewData, Risk, RiskInput, ViewerLastReview } from "./types.ts";
 import { decided, prKeyString, prSlug } from "./types.ts";
 export { decided } from "./types.ts";
 import { buildReviewData } from "./diff.ts";
@@ -851,7 +851,31 @@ export class DifflineService extends EventEmitter {
     const detail = await fetchPullRequest(key);
     this.details.set(id, { at: Date.now(), detail });
     if (detail.viewer?.login) this.viewer = detail.viewer;
+    // A pull request opened by link that no search has listed yet gets its sidebar row from this, without a search.
+    const r = this.get(key);
+    if (r && r.pinned && !r.summary) {
+      r.summary = summaryFromDetail(key, detail);
+      r.headSeenAt = Date.now();
+      this.changed();
+    }
     return detail;
+  }
+
+  /**
+   * Start getting a pull request's head commit into its clone while GitHub is asked for the detail (loadStaged):
+   * resolve the clone (a first open of a repository clones it here) and fetch GitHub's refs/pull/<n>/head, unless the
+   * head already known from the list or an earlier detail is there. loadData's ensureCommits still checks the exact head
+   * and base once the detail says which they are; it waits for this fetch rather than fetching the same again. Never throws.
+   */
+  async prefetch(key: PrKey): Promise<void> {
+    try {
+      const clone = await this.repos.resolve(key.owner, key.name);
+      const known = this.details.get(prKeyString(key).toLowerCase())?.detail.pr.headRefOid || this.get(key)?.summary?.headRefOid;
+      if (known && (await this.repos.hasCommit(clone.path, known))) return;
+      await this.repos.fetchHead(clone, key.number);
+    } catch (err) {
+      this.log(`Couldn't fetch ${prKeyString(key)} early: ${err instanceof Error ? err.message : err}`);
+    }
   }
 
   /** The diff for a pull request at its current head, from the cache or built from the local clone. */
@@ -901,6 +925,27 @@ export class DifflineService extends EventEmitter {
   async loadReview(key: PrKey, opts: { cached?: boolean; home?: boolean; view?: "metrics" } = {}): Promise<{ data: ReviewData; live: LiveData }> {
     const detail = await this.detail(key, opts.cached ? Number.POSITIVE_INFINITY : 0);
     const { data } = await this.loadData(key, detail);
+    return { data, live: await this.liveData(key, detail, opts) };
+  }
+
+  /**
+   * A review in two parts, for opening it fast (ReviewPanel.show): `first` is everything the page shows around the diff,
+   * as soon as GitHub answers; `data` is the diff once it's built. The head is fetched into the clone while GitHub is
+   * asked (prefetch). `cached` opens from a detail fetched earlier, if there is one.
+   */
+  loadStaged(key: PrKey, opts: { cached?: boolean; home?: boolean; view?: "metrics" } = {}): { first: Promise<{ live: LiveData; detail: PullRequestDetail }>; data: Promise<ReviewData> } {
+    void this.prefetch(key);
+    const detail = this.detail(key, opts.cached ? Number.POSITIVE_INFINITY : 0);
+    const data = detail.then((d) => this.loadData(key, d)).then((r) => r.data);
+    // Either part may go unawaited when the page is replaced first; its failure is reported by the one that's awaited.
+    data.catch(() => undefined);
+    const first = detail.then(async (d) => ({ live: await this.liveData(key, d, opts), detail: d }));
+    first.catch(() => undefined);
+    return { first, data };
+  }
+
+  /** What the page shows around the diff: the pull request from GitHub, the agent review, your review state and the list. */
+  async liveData(key: PrKey, detail: PullRequestDetail, opts: { home?: boolean; view?: "metrics" } = {}): Promise<LiveData> {
     const [agent, state] = await Promise.all([this.store.readAgent(key), this.store.readState(key)]);
     this.record(key).agent = agentSummary(agent);
     const live: LiveData = {
@@ -927,7 +972,7 @@ export class DifflineService extends EventEmitter {
     if (run.state === "held" && run.note) live.runNote = run.note;
     if (opts.view === "metrics") live.startView = "metrics";
     else if (opts.home) live.startView = "inbox";
-    return { data, live };
+    return live;
   }
 
   /* ---------- The list, as the page and the sidebar show it ---------- */
@@ -1425,6 +1470,49 @@ export function checkPush(body: unknown, detail: PullRequestDetail): PushPayload
     throw new Error(`This review has what looks like ${secrets.join(", ")}. Remove it before posting; nothing was sent.`);
   }
   return p;
+}
+
+/**
+ * A sidebar row for a pull request from its detail, for one opened by link before any search lists it ("pinned"). The
+ * next refresh replaces it with the search's. Changed files come with the diff.
+ */
+export function summaryFromDetail(key: PrKey, detail: PullRequestDetail): PullRequestSummary {
+  const pr = detail.pr;
+  const me = detail.viewer?.login?.toLowerCase() || null;
+  const isMe = (login: string | null | undefined) => !!me && !!login && login.toLowerCase() === me;
+  const last: ViewerLastReview | null = pr.lastReview?.state ? { state: pr.lastReview.state, at: pr.lastReview.submittedAt, commit: pr.lastReview.commit } : null;
+  const since = sinceReview(last, pr);
+  return {
+    repo: `${key.owner}/${key.name}`,
+    number: key.number,
+    title: pr.title,
+    url: pr.url,
+    author: pr.author,
+    createdAt: pr.createdAt,
+    updatedAt: pr.updatedAt ?? pr.createdAt,
+    state: pr.state,
+    isDraft: pr.isDraft,
+    mergedAt: pr.mergedAt,
+    closedAt: pr.closedAt,
+    baseRefName: pr.baseRefName,
+    headRefName: pr.headRefName,
+    headRefOid: pr.headRefOid,
+    reviewDecision: pr.reviewDecision,
+    mergeStateStatus: pr.mergeStateStatus,
+    additions: pr.additions ?? 0,
+    deletions: pr.deletions ?? 0,
+    changedFiles: pr.changedFiles ?? 0,
+    files: [],
+    checks: countChecks(pr.checks),
+    requested: pr.reviewRequests.some((r) => isMe(r.login)),
+    own: isMe(pr.author?.login),
+    viewerReview: pr.latestReviews.find((r) => isMe(r.login))?.state ?? null,
+    viewerLastReview: last,
+    ...(since ? { sinceReview: since } : {}),
+    reviewCounts: reviewCounts(pr.latestReviews),
+    latestReviews: pr.latestReviews.map((r) => ({ login: r.login, state: r.state })),
+    reasons: ["pinned"],
+  };
 }
 
 /** owner/name#number or a pull request link. Only names GitHub allows, so a key can't reach outside Diffline's folders. */

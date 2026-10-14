@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { GUIDE, shortName } from "./agents/defaults.ts";
 import { HARNESS_IDS, HARNESS_NAME, harnessVersion, isHarnessId, listPiModels, PI_THINKING, piModelThinking, type HarnessConfig, type HarnessId } from "./agents/harness.ts";
 import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, removeAgent, resetSettings, setAgentHarness, setAgentModel, settingsDir, settingsFile } from "./agents/settings.ts";
+import { clipboardPullRequest, parseOpenLink, reviewLink } from "./core/links.ts";
 import { Repos } from "./core/repos.ts";
 import { approverWords, DifflineService, parseKey, RECENTLY_CLOSED_DAYS, type ApprovedPolicy, type ServiceConfig } from "./core/service.ts";
 import { Store } from "./core/store.ts";
@@ -71,10 +72,12 @@ function keyFrom(arg: unknown, panel: ReviewPanel): PrKey | null {
   return panel.key;
 }
 
-/** Returned from activate for the extension-host smoke test. */
+/** Returned from activate for the extension-host smoke test and the measuring script (scripts/open-timing.sh). */
 export interface DifflineApi {
   service: DifflineService;
   panel: ReviewPanel;
+  /** Open a pull request's review the way a link does. */
+  openLink(key: PrKey): Promise<void>;
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<DifflineApi> {
@@ -372,19 +375,54 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     const key = keyFrom(arg, panel);
     if (key) await panel.show(key);
   });
-  command("diffline.openPullRequest", async () => {
+  /**
+   * Open a pull request by link (Open a Pull Request…, a Diffline link): it joins the sidebar as pinned, and its review
+   * opens without waiting for the sidebar. Nothing searches the whole list again: the row fills in from the pull
+   * request's own detail, which the review loads anyway. Agents never run from here.
+   */
+  const openLink = async (key: PrKey) => {
+    await service.pin(key);
+    await panel.show(key);
+  };
+  command("diffline.openPullRequest", async (arg?: unknown) => {
+    const given = typeof arg === "string" ? parseKey(arg) : null;
+    if (given) return openLink(given);
+    // A pull request link on the clipboard is filled in, selected, so typing replaces it.
+    const copied = clipboardPullRequest(await vscode.env.clipboard.readText().then((t) => t, () => ""), vscode.env.uriScheme);
     const value = await vscode.window.showInputBox({
       title: "Open a pull request",
-      prompt: "A GitHub link or owner/name#number",
+      prompt: copied ? "A GitHub link or owner/name#number. This one is from your clipboard." : "A GitHub link or owner/name#number",
       placeHolder: "https://github.com/owner/name/pull/123",
+      ...(copied ? { value: copied, valueSelection: [0, copied.length] as [number, number] } : {}),
       validateInput: (v) => (parseKey(v) ? null : "Use a GitHub pull request link or owner/name#number"),
     });
     const key = value ? parseKey(value) : null;
-    if (!key) return;
-    await service.pin(key);
-    void service.refresh().catch(() => undefined);
-    await panel.show(key);
+    if (key) await openLink(key);
   });
+  /** A link that opens this review in Diffline (diffline's URI handler below), to paste in a chat or notes. */
+  command("diffline.copyLink", async (arg: unknown) => {
+    const key = keyFrom(arg, panel);
+    if (!key) return void vscode.window.showInformationMessage("Open a pull request first, or pick one in the Diffline sidebar.");
+    const link = reviewLink(vscode.env.uriScheme, key);
+    await vscode.env.clipboard.writeText(link);
+    void vscode.window.showInformationMessage(`Copied a link that opens ${prKeyString(key)} in Diffline: ${link}`);
+  });
+  // <scheme>://arminkarimi.diffline/open?pr=owner/name%23123 or ?url=<GitHub pull request link> (core/links.ts). The
+  // link can come from anywhere, so it's checked strictly and only ever opens a review.
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri: async (uri: vscode.Uri) => {
+        const parsed = parseOpenLink(uri);
+        if ("error" in parsed) {
+          log(`Didn't open a link: ${parsed.error}`);
+          void vscode.window.showWarningMessage(`Diffline: ${parsed.error}`);
+          return;
+        }
+        log(`Opening ${prKeyString(parsed.key)} from a link`);
+        await openLink(parsed.key);
+      },
+    }),
+  );
   command("diffline.openOnGitHub", (arg: unknown) => {
     const key = keyFrom(arg, panel);
     if (key) void vscode.env.openExternal(vscode.Uri.parse(`https://github.com/${key.owner}/${key.name}/pull/${key.number}`));
@@ -608,7 +646,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
   updateStatus();
   showSidebarMode();
   log(`Diffline started. Agents run with ${readConfig().harnesses.default} unless agents.yml says otherwise; data in ${context.globalStorageUri.fsPath}.`);
-  return { service, panel };
+  return { service, panel, openLink };
 }
 
 export function deactivate(): void {

@@ -9,9 +9,9 @@ import * as vscode from "vscode";
 
 import { prChange, type PrSnapshot } from "../core/review-status.ts";
 import { parseKey, type DifflineService } from "../core/service.ts";
-import type { PrKey } from "../core/types.ts";
+import type { PrKey, ReviewData } from "../core/types.ts";
 import { prKeyString } from "../core/types.ts";
-import { buildPage, hostShim } from "./page.ts";
+import { buildPage, hostShim, pendingReviewData } from "./page.ts";
 
 const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
@@ -53,6 +53,72 @@ export async function exportAgentReview(
   return { ...base, copied: true, saved: null };
 }
 
+/** What a page measured itself when it drew (performance.now() in the webview, rounded ms). */
+export interface PageMarks {
+  /** When the page's script started, from when the page began loading: parsing the HTML and its inline data. For the changes stage, when it started drawing them. */
+  start: number;
+  /** How long building the page's model, drawing it and laying it out took from there. */
+  render: number;
+}
+
+/**
+ * One open of a review, for the log line and the measuring script (scripts/open-timing.sh). Times are ms from the open;
+ * `waited` is how long the panel waited after the detail for a diff that was nearly ready (up to DIFF_GRACE_MS), which
+ * the page's total includes and its parts don't.
+ * In one stage (the diff was ready with GitHub's detail): `data` (detail and diff ready), `page` (HTML built), `shown`
+ * (the page said it drew). In two stages (`staged`): `detail`, `page` and `shown` for the page without the diff, then
+ * `diff` (built), `sent` (sent to the page, once it had drawn and the diff was ready) and `changes` (the page said it
+ * drew them), or `failed` when the diff didn't load.
+ */
+export interface OpenTiming {
+  key: string;
+  load: number;
+  cached: boolean;
+  staged: boolean;
+  data?: number;
+  detail?: number;
+  waited?: number;
+  page?: number;
+  shown?: number;
+  diff?: number;
+  sent?: number;
+  changes?: number;
+  failed?: boolean;
+  pageMarks?: PageMarks;
+  changesMarks?: PageMarks;
+  line?: string;
+}
+
+/**
+ * The log line for an open (OpenTiming), "?" for a time not known (a page that didn't say it drew). One stage:
+ *   Opened acme/web#123 in 1210 ms (data 1150 ms, page 20 ms, rendered 40 ms)
+ * Two stages, each part with its total from the open:
+ *   Opened acme/web#123 in 4210 ms: the page in 980 ms (detail 870 ms, page 20 ms, rendered 90 ms), the changes in 4210 ms (diff 1900 ms, rendered 2300 ms)
+ * " (from cache)" ends the line when it opened from a detail fetched earlier.
+ */
+export function openedLine(t: OpenTiming): string {
+  const ms = (n: number | undefined) => (n === undefined ? "?" : `${Math.round(n)}`);
+  const span = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? undefined : b - a);
+  const cache = t.cached ? " (from cache)" : "";
+  if (!t.staged) {
+    return `Opened ${t.key} in ${ms(t.shown)} ms (data ${ms(t.data)} ms, page ${ms(span(t.data, t.page))} ms, rendered ${ms(span(t.page, t.shown))} ms)${cache}`;
+  }
+  const page = `the page in ${ms(t.shown)} ms (detail ${ms(t.detail)} ms, page ${ms(span((t.detail ?? 0) + (t.waited ?? 0), t.page))} ms, rendered ${ms(span(t.page, t.shown))} ms)`;
+  if (t.failed) return `Opened ${t.key}: ${page}; the changes didn't load${cache}`;
+  return `Opened ${t.key} in ${ms(t.changes)} ms: ${page}, the changes in ${ms(t.changes)} ms (diff ${ms(t.diff)} ms, rendered ${ms(span(t.sent, t.changes))} ms)${cache}`;
+}
+
+/** A diff ready this soon after GitHub's detail goes in the page at once, rather than a page without it for a moment. */
+export const DIFF_GRACE_MS = 150;
+/**
+ * Pull requests with at least this many changed lines (GitHub's additions plus deletions) always open in two parts, even
+ * with the diff ready: drawing a large diff takes seconds, and the rest of the page needn't wait for it.
+ */
+export const STAGE_LINES = 2000;
+
+/** How long to wait for a page to say it drew before logging the open without it (a hidden panel may not draw). */
+const RENDER_WAIT_MS = 60_000;
+
 export class ReviewPanel {
   private panel: vscode.WebviewPanel | null = null;
   private current: PrKey | null = null;
@@ -70,6 +136,10 @@ export class ReviewPanel {
   private readonly extensionUri: vscode.Uri;
   private readonly service: DifflineService;
   private readonly log: (line: string) => void;
+  /** Pages that haven't said they drew yet, by "<load>:<stage>". */
+  private readonly drawing = new Map<string, (marks: PageMarks | null) => void>();
+  /** The last opens, newest last, for the measuring script. */
+  readonly timings: OpenTiming[] = [];
 
   constructor(extensionUri: vscode.Uri, service: DifflineService, log: (line: string) => void) {
     this.extensionUri = extensionUri;
@@ -175,7 +245,13 @@ export class ReviewPanel {
     await this.show(key, { home: true, view: "metrics" });
   }
 
-  /** Show a pull request. The panel shows a loading page at once and the review when its data is ready. */
+  /**
+   * Show a pull request. The panel shows a loading page at once, the review as soon as GitHub's detail is in, and the
+   * diff when it's built: a diff ready with the detail (or within DIFF_GRACE_MS) goes in the page at once, unless the
+   * pull request is large (STAGE_LINES); otherwise the page opens without it ("Loading the changes…") and gets it in a
+   * "host-data" message once it has drawn, without a reload. The head commit is fetched while GitHub is asked
+   * (DifflineService.loadStaged).
+   */
   async show(key: PrKey, opts: { home?: boolean; view?: "metrics" } = {}): Promise<void> {
     const panel = this.ensurePanel();
     panel.reveal(panel.viewColumn ?? vscode.ViewColumn.Active, false);
@@ -190,25 +266,86 @@ export class ReviewPanel {
     const title = this.service.get(key)?.summary?.title;
     panel.title = view === "metrics" ? "Diffline: review metrics" : home ? "Diffline: pull requests" : `#${key.number}${title ? ` ${title}` : ""}`;
     const started = Date.now();
+    const since = () => Date.now() - started;
     try {
       // Open at once from what's already known, then check GitHub and update the page only if something changed.
       const cached = this.service.hasCachedDetail(key);
+      const timing: OpenTiming = { key: prKeyString(key), load: seq, cached, staged: false };
       if (!cached) panel.webview.html = this.message(`Loading ${prKeyString(key)}…`, true);
-      const first = await this.service.loadReview(key, { cached, home, ...(view ? { view } : {}) });
+      const loading = this.service.loadStaged(key, { cached, home, ...(view ? { view } : {}) });
+      let diff: ReviewData | null = null;
+      loading.data.then(
+        (d) => {
+          diff = d;
+          timing.diff = since();
+        },
+        () => undefined,
+      );
+      const first = await loading.first;
+      timing.detail = since();
+      if (stale()) return;
+      const pr = first.detail.pr;
+      const large = (pr.additions ?? 0) + (pr.deletions ?? 0) >= STAGE_LINES;
+      if (!diff && !large) await Promise.race([loading.data.catch(() => null), new Promise((r) => setTimeout(r, DIFF_GRACE_MS))]);
+      timing.waited = since() - timing.detail;
       if (stale()) return;
       if (!home) panel.title = `#${key.number} ${first.live.pr.title}`;
-      const html = await this.page(key, first.data, first.live);
+      const ready: ReviewData | null = large ? null : diff;
+      timing.staged = !ready;
+      if (ready) timing.data = since();
+      const html = await this.page(key, ready ?? pendingReviewData(`${key.owner}/${key.name}`, pr), first.live, seq);
+      timing.page = since();
       if (stale()) return;
+      const drawn = this.drawn(seq, "page").then((marks) => {
+        if (marks) {
+          timing.shown = since();
+          timing.pageMarks = marks;
+        }
+      });
       panel.webview.html = html;
       this.shownSeq = seq;
       this.shown(first.live.pr);
-      this.log(`Opened ${prKeyString(key)} in ${Date.now() - started} ms${cached ? " (from cache)" : ""}`);
+      let shownData: ReviewData;
+      if (!ready) {
+        let data: ReviewData;
+        try {
+          data = await loading.data;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.log(`Couldn't load the changes of ${prKeyString(key)}: ${message}`);
+          timing.failed = true;
+          await drawn;
+          if (!stale()) void panel.webview.postMessage({ type: "host-data", error: message });
+          this.timed(timing);
+          return;
+        }
+        // The page listens once it has drawn; with the list as it is now that the diff is built.
+        await drawn;
+        if (stale()) return;
+        const groups = await this.service.pageGroups();
+        const list = await this.service.listItems(key, first.detail, groups);
+        if (stale()) return;
+        const changes = this.drawn(seq, "changes");
+        timing.sent = since();
+        void panel.webview.postMessage({ type: "host-data", data, list, groups });
+        void changes.then((marks) => {
+          if (marks) {
+            timing.changes = since();
+            timing.changesMarks = marks;
+          }
+          this.timed(timing);
+        });
+        shownData = data;
+      } else {
+        void drawn.then(() => this.timed(timing));
+        shownData = ready;
+      }
       if (!cached) return;
       const fresh = await this.service.loadReview(key, { home, ...(view ? { view } : {}) });
       if (stale()) return;
       const sig = (l: typeof first.live) => JSON.stringify([l.pr, l.threads, l.agent?.ranAt]);
-      if (fresh.data.head.sha !== first.data.head.sha || sig(fresh.live) !== sig(first.live)) {
-        const html = await this.page(key, fresh.data, fresh.live);
+      if (fresh.data.head.sha !== shownData.head.sha || sig(fresh.live) !== sig(first.live)) {
+        const html = await this.page(key, fresh.data, fresh.live, seq);
         if (stale()) return;
         panel.webview.html = html;
         this.shown(fresh.live.pr);
@@ -221,6 +358,29 @@ export class ReviewPanel {
       if (stale() || this.shownSeq === seq) return;
       panel.webview.html = this.message(`This pull request didn't load. ${message}`, false);
     }
+  }
+
+  /** Resolves when the page of this load says it drew this stage, or with null when it doesn't in time (or is replaced). */
+  private drawn(load: number, stage: "page" | "changes"): Promise<PageMarks | null> {
+    const id = `${load}:${stage}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => done(null), RENDER_WAIT_MS);
+      timer.unref?.();
+      const done = (marks: PageMarks | null) => {
+        clearTimeout(timer);
+        if (this.drawing.get(id) === done) this.drawing.delete(id);
+        resolve(marks);
+      };
+      this.drawing.set(id, done);
+    });
+  }
+
+  /** An open finished: log its line and keep it for the measuring script. */
+  private timed(t: OpenTiming): void {
+    t.line = openedLine(t);
+    this.log(t.line);
+    this.timings.push(t);
+    if (this.timings.length > 20) this.timings.shift();
   }
 
   /** A new page is on screen: remember what it shows, so later changes on GitHub can be told apart. */
@@ -255,6 +415,13 @@ export class ReviewPanel {
   private async onMessage(m: any): Promise<void> {
     const key = m && typeof m === "object" && typeof m.key === "string" ? parseKey(m.key) : null;
     if (!key) return;
+    if (m.type === "rendered") {
+      if (m.stage === "error") return void this.log(`The page for ${prKeyString(key)} hit an error: ${String(m.error || "unknown")}`);
+      const ms = m.ms && typeof m.ms === "object" ? m.ms : {};
+      const n = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? Math.round(x) : 0);
+      this.drawing.get(`${Number(m.load)}:${m.stage === "changes" ? "changes" : "page"}`)?.({ start: n(ms.start), render: n(ms.render) });
+      return;
+    }
     if (m.type === "api") {
       try {
         const data = await this.service.api(key, String(m.method), String(m.path), m.body);
@@ -315,7 +482,7 @@ p{max-width:36rem;text-align:center;line-height:1.5;opacity:.85}.spin{width:18px
 @keyframes r{to{transform:rotate(360deg)}}</style></head><body><div>${loading ? '<div class="spin"></div>' : ""}<p>${escapeHtml(text)}</p></div></body></html>`;
   }
 
-  private async page(key: PrKey, data: unknown, live: unknown): Promise<string> {
+  private async page(key: PrKey, data: unknown, live: unknown, load = 0): Promise<string> {
     const webview = this.panel!.webview;
     if (!this.template) this.template = await readFile(this.ui("index.html").fsPath, "utf8");
     const nonce = randomBytes(16).toString("base64");
@@ -329,7 +496,7 @@ p{max-width:36rem;text-align:center;line-height:1.5;opacity:.85}.spin{width:18px
     ].join("; ");
     const styles = webview.asWebviewUri(this.ui("styles.css")).toString();
     const app = webview.asWebviewUri(this.ui("app.js")).toString();
-    return buildPage(this.template, { csp, nonce, stylesUrl: styles, appUrl: app, shim: hostShim(prKeyString(key)), data, live });
+    return buildPage(this.template, { csp, nonce, stylesUrl: styles, appUrl: app, shim: hostShim(prKeyString(key), load), data, live });
   }
 
   dispose(): void {

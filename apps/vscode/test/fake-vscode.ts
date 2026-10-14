@@ -1,5 +1,5 @@
-// Just enough of the vscode module for ReviewPanel and the sidebar tree, so their tests run without VS Code. panel.test.ts
-// and tree.test.ts map "vscode" here.
+// Just enough of the vscode module for ReviewPanel, the sidebar tree and the extension's activation, so their tests run
+// without VS Code. panel.test.ts, tree.test.ts and extension.test.ts map "vscode" here.
 
 import path from "node:path";
 
@@ -51,10 +51,45 @@ export const ViewColumn = { Active: -1 };
 export const Uri = {
   file: (fsPath: string) => ({ fsPath }),
   joinPath: (base: { fsPath: string }, ...parts: string[]) => ({ fsPath: path.join(base.fsPath, ...parts) }),
+  parse: (value: string) => ({ value, toString: () => value }),
 };
+export const StatusBarAlignment = { Left: 1, Right: 2 };
+export const ProgressLocation = { SourceControl: 1, Window: 10, Notification: 15 };
+export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 };
+export const QuickPickItemKind = { Separator: -1, Default: 0 };
+
+/* The extension's activation (extension.test.ts). */
+
+const disposable = () => ({ dispose: () => undefined });
+/** Commands the extension registered, by id. */
+export const registered = new Map<string, (...args: any[]) => unknown>();
+/** URI handlers the extension registered. */
+export const uriHandlers: Array<{ handleUri(uri: unknown): unknown }> = [];
+/** Messages shown, as [kind, text]. */
+export const shown: Array<[string, string]> = [];
+/** What the next input box answers (undefined: dismissed), and the options each one opened with. */
+export const inputBox: { answer: string | undefined; opened: any[] } = { answer: undefined, opened: [] };
+/** Settings by section and key ("diffline.watch.teamRequests"); missing ones read as the default the extension passes. */
+export const settings = new Map<string, unknown>();
 /** What the next save dialog answers (undefined: cancelled), and the options each one was opened with. */
 export const saveDialog: { answer: { fsPath: string } | undefined; opened: any[] } = { answer: undefined, opened: [] };
 export const window = {
+  createOutputChannel: () => ({ info() {}, show() {}, dispose() {} }),
+  createTreeView: () => ({ description: "", badge: undefined, dispose() {} }),
+  createStatusBarItem: () => ({ text: "", tooltip: "", command: "", show() {}, hide() {}, dispose() {} }),
+  registerUriHandler: (handler: { handleUri(uri: unknown): unknown }) => {
+    uriHandlers.push(handler);
+    return disposable();
+  },
+  showInputBox: async (opts: unknown) => {
+    inputBox.opened.push(opts);
+    return inputBox.answer;
+  },
+  showInformationMessage: async (text: string) => void shown.push(["info", text]),
+  showWarningMessage: async (text: string) => void shown.push(["warning", text]),
+  showErrorMessage: async (text: string) => void shown.push(["error", text]),
+  showQuickPick: async () => undefined,
+  withProgress: async (_o: unknown, fn: () => Promise<unknown>) => fn(),
   createWebviewPanel: () => {
     const panel = new FakePanel();
     created.push(panel);
@@ -67,15 +102,36 @@ export const window = {
 };
 /** What the extension last put on the clipboard. */
 export const env = {
+  uriScheme: "vscode",
   clipboard: {
     text: "",
     async writeText(text: string) {
       env.clipboard.text = text;
     },
+    async readText() {
+      return env.clipboard.text;
+    },
   },
+  openExternal: async () => true,
 };
 export const commands = {
   executeCommand: async (...args: unknown[]) => void executed.push(args),
+  registerCommand: (id: string, fn: (...args: any[]) => unknown) => {
+    registered.set(id, fn);
+    return disposable();
+  },
+};
+export const workspace = {
+  workspaceFolders: [] as Array<{ uri: { fsPath: string } }>,
+  getConfiguration: (section = "") => ({
+    get: (key: string, fallback?: unknown) => {
+      const id = section ? `${section}.${key}` : key;
+      return settings.has(id) ? settings.get(id) : fallback;
+    },
+    update: async (key: string, value: unknown) => void settings.set(section ? `${section}.${key}` : key, value),
+  }),
+  onDidChangeConfiguration: () => disposable(),
+  onDidChangeWorkspaceFolders: () => disposable(),
 };
 
 /* The sidebar tree (tree.test.ts). */
