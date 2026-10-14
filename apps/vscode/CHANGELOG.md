@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
+
+Open a review from a link, and see the pull request before its diff is ready.
 
 Open a pull request from a link, and see its page before the diff is drawn.
 

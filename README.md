@@ -4,7 +4,7 @@ Diffline is a VS Code extension for reviewing GitHub pull requests; it works in 
 
 ## Status
 
-Preview, version 0.3.1. It reviews real pull requests, and it has rough edges. Diffline isn't on the VS Code Marketplace yet. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
+Preview, version 0.3.2. It reviews real pull requests, and it has rough edges. Diffline isn't on the VS Code Marketplace yet. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
 
 ## Install
 
@@ -13,10 +13,10 @@ You need VS Code 1.95 or later (or Cursor), git, the [GitHub CLI](https://cli.gi
 Install the `.vsix` file:
 
 ```sh
-code --install-extension diffline-0.3.1.vsix
+code --install-extension diffline-0.3.2.vsix
 ```
 
-Or in VS Code: Extensions view, **…** → **Install from VSIX…**. In Cursor, run `cursor --install-extension diffline-0.3.1.vsix`, or **Extensions: Install from VSIX…** from the Command Palette. To build the `.vsix` yourself, see [Development](#development).
+Or in VS Code: Extensions view, **…** → **Install from VSIX…**. In Cursor, run `cursor --install-extension diffline-0.3.2.vsix`, or **Extensions: Install from VSIX…** from the Command Palette. To build the `.vsix` yourself, see [Development](#development).
 
 The [extension's README](apps/vscode/README.md) covers the first run, settings, costs, privacy and troubleshooting.
 
