@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
-On the VS Code Marketplace and Open VSX.
+On the VS Code Marketplace and Open VSX, and chapters fold in the sidebar.
 
 - **Install from the Marketplace or Open VSX.** Search for Diffline in the Extensions view, or run `ext install arminkarimi.diffline`. Cursor, VSCodium and Windsurf install it from Open VSX. The `.vsix` from a GitHub release still works.
+- **Collapse chapters in the sidebar.** The arrow next to a chapter folds its file list; Alt-click (Option-click on macOS) folds or unfolds every chapter. A folded chapter shows how many hunks are left and is highlighted while you read one of its files.
 - **Screenshots in the README**: the agents' briefing, a finding in the diff, the Map and Home.
 
 ## 0.3.2
