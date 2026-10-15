@@ -115,6 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the GitHub release
+      id-token: write # Open VSX trusted publishing: an OIDC token, exchanged for a short-lived publish token
     env:
       VERSION: ${{ needs.package.outputs.version }}
       VSIX: release/diffline-${{ needs.package.outputs.version }}.vsix
@@ -152,13 +153,16 @@ jobs:
           fi
           npx --yes "@vscode/vsce@$VSCE_VERSION" publish --packagePath "$VSIX" --skip-duplicate
 
-      # ovsx reads the token from OVSX_PAT.
+      # Trusted publishing: Open VSX accepts this workflow (release.yml in this repository) as registered for the
+      # namespace, so no token is stored. An OVSX_PAT secret, while it exists, takes precedence; delete it once a
+      # release has published through trusted publishing. CONTRIBUTING.md has the setup.
       - name: Publish to Open VSX
         env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
-          if [ -z "$OVSX_PAT" ]; then
-            echo "::notice::Skipped Open VSX: the OVSX_PAT secret isn't set."
-            exit 0
+          if [ -n "$OVSX_PAT" ]; then
+            npx --yes "ovsx@$OVSX_VERSION" publish --packagePath "$VSIX" --skip-duplicate
+          else
+            unset OVSX_PAT
+            npx --yes "ovsx@$OVSX_VERSION" publish --packagePath "$VSIX" --skip-duplicate --trusted-publishing
           fi
-          npx --yes "ovsx@$OVSX_VERSION" publish --packagePath "$VSIX" --skip-duplicate
