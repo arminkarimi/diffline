@@ -267,7 +267,7 @@ A row's context value is `pr.<state>` (`idle`, `running` or `elsewhere`), then `
 
 ### Links
 
-The URI handler (`registerUriHandler` in `src/extension.ts`) takes `<scheme>://arminkarimi.diffline/open?pr=owner/name%23123` or `?url=<GitHub pull request link>`, where `<scheme>` is the editor's own (`vscode.env.uriScheme`: `vscode`, `vscode-insiders`, `cursor`). VS Code asks the user before it first hands a link from outside the editor to the extension. `parseOpenLink()` in `src/core/links.ts`, a pure module with its own tests, checks the parts VS Code passes, decoded. A link can come from anywhere, so it's strict:
+The URI handler (`registerUriHandler` in `src/extension.ts`) takes `<scheme>://diffline.diffline/open?pr=owner/name%23123` or `?url=<GitHub pull request link>`, where `<scheme>` is the editor's own (`vscode.env.uriScheme`: `vscode`, `vscode-insiders`, `cursor`). VS Code asks the user before it first hands a link from outside the editor to the extension. `parseOpenLink()` in `src/core/links.ts`, a pure module with its own tests, checks the parts VS Code passes, decoded. A link can come from anywhere, so it's strict:
 
 - The path is `/open`, and the query at most 2,000 characters.
 - Exactly one of `pr` and `url`.
@@ -426,7 +426,7 @@ The page draws the result. **Export** asks for `metricsExport({ format, days })`
 
 ## Storage
 
-The extension's global storage (on macOS, `~/Library/Application Support/Code/User/globalStorage/arminkarimi.diffline/`) is created readable by the user's account only. `<slug>` is `<owner>__<name>__<number>`.
+The extension's global storage (on macOS, `~/Library/Application Support/Code/User/globalStorage/diffline.diffline/`) is created readable by the user's account only. `<slug>` is `<owner>__<name>__<number>`.
 
 | Path | What's in it |
 | --- | --- |

@@ -38,7 +38,7 @@ async function start() {
     extension: { packageJSON: { version: "0.0.0-test" } },
     extensionUri: { fsPath: path.join(here, "..") },
   };
-  const api = await activate(context as any);
+  const api = (await activate(context as any))!;
   await api.service.refresh();
   // The review panel isn't under test here: record what it was asked to open.
   const opened: string[] = [];
@@ -115,7 +115,7 @@ test("Copy Link to This Review: a link in the editor's scheme that opens the rev
   const { stop } = await start();
   try {
     await fake.registered.get("diffline.copyLink")!("acme/web#7");
-    assert.equal(fake.env.clipboard.text, "vscode://arminkarimi.diffline/open?pr=acme/web%237");
+    assert.equal(fake.env.clipboard.text, "vscode://diffline.diffline/open?pr=acme/web%237");
     assert.match(fake.shown.at(-1)![1], /^Copied a link that opens acme\/web#7 in Diffline: vscode:\/\//);
   } finally {
     stop();
@@ -127,4 +127,24 @@ test("package.json: activates on links, and Open a Pull Request… has its short
   assert.ok(pkg.activationEvents.includes("onUri"));
   assert.deepEqual(pkg.contributes.keybindings, [{ command: "diffline.openPullRequest", key: "ctrl+shift+alt+p", mac: "cmd+alt+shift+p" }]);
   assert.ok(pkg.contributes.commands.some((c: { command: string }) => c.command === "diffline.copyLink"));
+});
+
+test("activate: waits while the old arminkarimi.diffline is installed, with a copy of its storage", async () => {
+  const { mkdir, writeFile, readdir } = await import("node:fs/promises");
+  const root = await mkdtemp(path.join(os.tmpdir(), "diffline-ext-old-"));
+  const storage = path.join(root, "diffline.diffline");
+  await mkdir(path.join(root, "arminkarimi.diffline", "state"), { recursive: true });
+  await writeFile(path.join(root, "arminkarimi.diffline", "state", "o__r__1.json"), "{}", "utf8");
+  fake.installed.add("arminkarimi.diffline");
+  const handlers = fake.uriHandlers.length;
+  fake.shown.length = 0;
+  try {
+    const context = { subscriptions: [], globalStorageUri: { fsPath: storage }, globalState: { get: (_k: string, f: unknown) => f, update: async () => undefined }, extension: { packageJSON: { version: "0.0.0-test" } }, extensionUri: { fsPath: path.join(here, "..") } };
+    assert.equal(await activate(context as any), undefined);
+    assert.equal(fake.uriHandlers.length, handlers, "nothing registered");
+    assert.match(fake.shown.find(([kind]) => kind === "warning")?.[1] ?? "", /arminkarimi\.diffline\) is still installed/);
+    assert.deepEqual(await readdir(path.join(storage, "state")), ["o__r__1.json"]);
+  } finally {
+    fake.installed.delete("arminkarimi.diffline");
+  }
 });

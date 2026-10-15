@@ -6,15 +6,15 @@ Website and docs: [diffline.dev](https://diffline.dev).
 
 ## Status
 
-Preview, version 0.4.0. It reviews real pull requests, and it has rough edges. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
+Preview, version 0.4.1. It reviews real pull requests, and it has rough edges. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
 
 ## Install
 
 You need VS Code 1.95 or later (or Cursor), git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI, the Codex CLI or Pi signed in.
 
-Install Diffline from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=arminkarimi.diffline): search for **Diffline** in the Extensions view, or run `code --install-extension arminkarimi.diffline`. Cursor, VSCodium and Windsurf install it from [Open VSX](https://open-vsx.org/extension/arminkarimi/diffline) the same way (`cursor --install-extension arminkarimi.diffline`).
+Install Diffline from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=diffline.diffline): search for **Diffline** in the Extensions view, or run `code --install-extension diffline.diffline`. Cursor, VSCodium and Windsurf install it from [Open VSX](https://open-vsx.org/extension/diffline/diffline) the same way (`cursor --install-extension diffline.diffline`).
 
-Or download the `.vsix` from [diffline.dev](https://diffline.dev/#install) or the [latest release](https://github.com/arminkarimi/diffline/releases/latest) and install it with **Extensions: Install from VSIX…** or `code --install-extension diffline-0.4.0.vsix`. To build the `.vsix` yourself, see [Development](#development).
+Or download the `.vsix` from [diffline.dev](https://diffline.dev/#install) or the [latest release](https://github.com/arminkarimi/diffline/releases/latest) and install it with **Extensions: Install from VSIX…** or `code --install-extension diffline-0.4.1.vsix`. To build the `.vsix` yourself, see [Development](#development).
 
 The [extension's README](apps/vscode/README.md) covers the first run, settings, costs, privacy and troubleshooting.
 

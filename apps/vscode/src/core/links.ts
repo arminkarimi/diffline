@@ -1,12 +1,13 @@
 // Links that open a review in Diffline, and pull request links on the clipboard. No VS Code here, so it's testable.
-//   <scheme>://arminkarimi.diffline/open?pr=owner/name%23123
-//   <scheme>://arminkarimi.diffline/open?url=https://github.com/owner/name/pull/123
+//   <scheme>://diffline.diffline/open?pr=owner/name%23123
+//   <scheme>://diffline.diffline/open?url=https://github.com/owner/name/pull/123
 // <scheme> is the editor's own (vscode.env.uriScheme): vscode, vscode-insiders, cursor and so on.
 
+import { OLD_EXTENSION_ID } from "./migrate.ts";
 import { parseKey } from "./service.ts";
 import type { PrKey } from "./types.ts";
 
-export const EXTENSION_ID = "arminkarimi.diffline";
+export const EXTENSION_ID = "diffline.diffline";
 
 /** The link that opens a pull request's review, for the editor whose URI scheme is `scheme`. */
 export function reviewLink(scheme: string, key: PrKey): string {
@@ -70,7 +71,8 @@ export function clipboardPullRequest(text: string, scheme = "vscode"): string | 
   if (!key) {
     try {
       const u = new URL(t);
-      if (u.protocol === `${scheme}:` && u.hostname.toLowerCase() === EXTENSION_ID) {
+      // Links copied before 0.4.1 carry the old ID; they still name a pull request.
+      if (u.protocol === `${scheme}:` && [EXTENSION_ID, OLD_EXTENSION_ID].includes(u.hostname.toLowerCase())) {
         const parsed = parseOpenLink({ path: decodeURIComponent(u.pathname), query: decodeURIComponent(u.search.slice(1)), fragment: decodeURIComponent(u.hash.slice(1)) });
         if ("key" in parsed) key = parsed.key;
       }

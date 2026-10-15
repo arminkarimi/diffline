@@ -22,7 +22,7 @@ const LABEL = process.env.DIFFLINE_TIMING_LABEL || "pr";
 exports.run = async () => {
   const out = [];
   const say = (s) => { out.push(s); console.log(`[timing] ${s}`); };
-  const ext = vscode.extensions.getExtension("arminkarimi.diffline");
+  const ext = vscode.extensions.getExtension("diffline.diffline");
   assert.ok(ext, "extension is installed");
   const api = await ext.activate();
   const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(PR || "");

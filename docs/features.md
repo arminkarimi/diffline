@@ -155,7 +155,7 @@ Each row also says how you reviewed it, when, and what changed since: "you appro
 
 **Diffline: Open a Pull Request…** (⌥⇧⌘P on macOS, Ctrl+Shift+Alt+P on Windows and Linux) opens any pull request from a GitHub link or `owner/name#123`. When the clipboard holds one, the box starts with it.
 
-A link opens a review from a browser, a chat or a terminal: `vscode://arminkarimi.diffline/open?url=https://github.com/acme/web/pull/123`, or `?pr=acme/web%23123`. Cursor's links start with `cursor://`. **Diffline: Copy Link to This Review** copies the link for the open review or a sidebar row. The first time, VS Code asks whether Diffline may open the link. A link only opens the review and adds it to the sidebar; it never runs the agents or posts anything.
+A link opens a review from a browser, a chat or a terminal: `vscode://diffline.diffline/open?url=https://github.com/acme/web/pull/123`, or `?pr=acme/web%23123`. Cursor's links start with `cursor://`. **Diffline: Copy Link to This Review** copies the link for the open review or a sidebar row. The first time, VS Code asks whether Diffline may open the link. A link only opens the review and adds it to the sidebar; it never runs the agents or posts anything.
 
 Opening doesn't refresh the sidebar or wait for it. The page shows as soon as GitHub answers, with the description, discussion, checks, workflow and agent briefing, and "Loading the changes…" where the diff goes; the changes fill in when they're ready, without a reload. Small pull requests open in one go. On a large one, the page shows in about 1 second instead of 4 to 8, and the diff takes about 3 seconds more to draw. The [extension's README](../apps/vscode/README.md) has the link formats and what works while the changes load.
 

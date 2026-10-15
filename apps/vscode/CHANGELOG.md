@@ -1,10 +1,18 @@
 # Changelog
 
+## 0.4.1
+
+A new extension ID for the stores: `diffline.diffline`.
+
+- **The extension ID is now `diffline.diffline`**, from the `diffline` publisher, instead of `arminkarimi.diffline`. Install it from the Marketplace or Open VSX (`ext install diffline.diffline`), or from this release's `.vsix`.
+- **Coming from an earlier version?** VS Code sees a different extension, so the old one stays installed until you remove it. The new Diffline waits and offers **Uninstall and Reload**; your reviews, drafts, agent runs, clones and review metrics come along. Pinned pull requests and the "remember" answers for agents on approved pull requests start over. Your agent settings in `~/.diffline` and your `diffline.*` settings don't change.
+- **Review links use the new ID**: `vscode://diffline.diffline/open?…`. A link copied before still works with **Open a Pull Request…** from the clipboard.
+
 ## 0.4.0
 
-On the VS Code Marketplace and Open VSX, and chapters fold in the sidebar.
+Ready for the VS Code Marketplace and Open VSX, and chapters fold in the sidebar.
 
-- **Install from the Marketplace or Open VSX.** Search for Diffline in the Extensions view, or run `ext install arminkarimi.diffline`. Cursor, VSCodium and Windsurf install it from Open VSX. The `.vsix` from a GitHub release still works.
+- **Ready for the Marketplace and Open VSX.** The README is the listing page, with install steps for VS Code and for Cursor, VSCodium and Windsurf (Open VSX). The `.vsix` from a GitHub release still works.
 - **Collapse chapters in the sidebar.** The arrow next to a chapter folds its file list; Alt-click (Option-click on macOS) folds or unfolds every chapter. A folded chapter shows how many hunks are left and is highlighted while you read one of its files.
 - **Screenshots in the README**: the agents' briefing, a finding in the diff, the Map and Home.
 

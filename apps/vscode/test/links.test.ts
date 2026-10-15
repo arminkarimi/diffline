@@ -46,15 +46,15 @@ test("parseOpenLink: anything else is refused with a short reason", () => {
   for (const u of bad) {
     const r = parseOpenLink(u);
     assert.ok("error" in r, `refused: ${JSON.stringify(u).slice(0, 120)}`);
-    assert.match((r as { error: string }).error, /arminkarimi\.diffline\/open\?pr=owner\/name%23123/);
+    assert.match((r as { error: string }).error, /diffline\.diffline\/open\?pr=owner\/name%23123/);
   }
   assert.match((parseOpenLink(uri("/run")) as { error: string }).error, /^That link isn't one Diffline knows\./);
 });
 
 test("reviewLink: the editor's scheme, and a link that parses back to the same pull request", () => {
   const k = { owner: "acme", name: "web", number: 123 };
-  assert.equal(reviewLink("vscode", k), "vscode://arminkarimi.diffline/open?pr=acme/web%23123");
-  assert.equal(reviewLink("cursor", k), "cursor://arminkarimi.diffline/open?pr=acme/web%23123");
+  assert.equal(reviewLink("vscode", k), "vscode://diffline.diffline/open?pr=acme/web%23123");
+  assert.equal(reviewLink("cursor", k), "cursor://diffline.diffline/open?pr=acme/web%23123");
   const u = new URL(reviewLink("vscode", k));
   assert.deepEqual(parseOpenLink({ path: u.pathname, query: decodeURIComponent(u.search.slice(1)), fragment: "" }), { key: k });
 });
@@ -63,8 +63,9 @@ test("clipboardPullRequest: a pull request link or key alone is offered as its G
   assert.equal(clipboardPullRequest("https://github.com/acme/web/pull/123"), "https://github.com/acme/web/pull/123");
   assert.equal(clipboardPullRequest("  https://github.com/acme/web/pull/123/files#diff-1\n"), "https://github.com/acme/web/pull/123");
   assert.equal(clipboardPullRequest("acme/web#123"), "https://github.com/acme/web/pull/123");
-  assert.equal(clipboardPullRequest("vscode://arminkarimi.diffline/open?pr=acme/web%23123"), "https://github.com/acme/web/pull/123");
-  assert.equal(clipboardPullRequest("cursor://arminkarimi.diffline/open?pr=acme/web%23123", "cursor"), "https://github.com/acme/web/pull/123");
+  assert.equal(clipboardPullRequest("vscode://diffline.diffline/open?pr=acme/web%23123"), "https://github.com/acme/web/pull/123");
+  assert.equal(clipboardPullRequest("cursor://diffline.diffline/open?pr=acme/web%23123", "cursor"), "https://github.com/acme/web/pull/123");
+  assert.equal(clipboardPullRequest("vscode://arminkarimi.diffline/open?pr=acme/web%23123"), "https://github.com/acme/web/pull/123", "a link with the old ID");
   for (const t of ["", "hello", "see https://github.com/acme/web/pull/123 please", "https://github.com/acme/web", "https://github.com/acme/web/issues/3", "https://gitlab.com/acme/web/pull/3", "vscode://someone.else/open?pr=acme/web%231", "x".repeat(3000)]) {
     assert.equal(clipboardPullRequest(t), undefined, JSON.stringify(t.slice(0, 60)));
   }

@@ -31,10 +31,10 @@ Website and docs: [diffline.dev](https://diffline.dev). Every feature is describ
 
 ## Install
 
-Diffline is on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=arminkarimi.diffline) and on [Open VSX](https://open-vsx.org/extension/arminkarimi/diffline).
+Diffline is on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=diffline.diffline) and on [Open VSX](https://open-vsx.org/extension/diffline/diffline).
 
-- **VS Code**: search for **Diffline** in the Extensions view and press **Install**. Or open Quick Open (**⌘P** on macOS, **Ctrl+P** on Windows and Linux), enter `ext install arminkarimi.diffline` and press Enter. Or in a terminal: `code --install-extension arminkarimi.diffline`.
-- **Cursor, VSCodium, Windsurf** and other editors that install from Open VSX: search for **Diffline** in the Extensions view and install it. In Cursor you can also run `cursor --install-extension arminkarimi.diffline` in a terminal; if `cursor` isn't found, run **Shell Command: Install 'cursor' command** from the Command Palette first.
+- **VS Code**: search for **Diffline** in the Extensions view and press **Install**. Or open Quick Open (**⌘P** on macOS, **Ctrl+P** on Windows and Linux), enter `ext install diffline.diffline` and press Enter. Or in a terminal: `code --install-extension diffline.diffline`.
+- **Cursor, VSCodium, Windsurf** and other editors that install from Open VSX: search for **Diffline** in the Extensions view and install it. In Cursor you can also run `cursor --install-extension diffline.diffline` in a terminal; if `cursor` isn't found, run **Shell Command: Install 'cursor' command** from the Command Palette first.
 - **From a `.vsix` file**: download `diffline-<version>.vsix` from a [release](https://github.com/arminkarimi/diffline/releases), or build it with `npm run package` (see [Development](#development)). Then run **Extensions: Install from VSIX…** from the Command Palette and pick the file, or in a terminal `code --install-extension diffline-<version>.vsix` (`cursor --install-extension` in Cursor).
 
 Reload the window if your editor asks. Installed from a store, Diffline updates like your other extensions; to update a `.vsix` install, install the newer file the same way. To remove Diffline, uninstall it from the Extensions view; `~/.diffline` stays until you delete it.
@@ -90,8 +90,8 @@ Automatic runs are on by default. About two minutes after Diffline first starts,
 A Diffline link opens a review from outside the editor, such as a browser, a chat or a terminal:
 
 ```
-vscode://arminkarimi.diffline/open?url=https://github.com/acme/web/pull/123
-vscode://arminkarimi.diffline/open?pr=acme/web%23123
+vscode://diffline.diffline/open?url=https://github.com/acme/web/pull/123
+vscode://diffline.diffline/open?pr=acme/web%23123
 ```
 
 In Cursor the link starts with `cursor://`, in VS Code Insiders with `vscode-insiders://`. `?url=` takes a GitHub pull request link, encoded or not, tabs like `/files` included. `?pr=` takes `owner/name#number` with the `#` written `%23` (a plain `#` works too). **Diffline: Copy Link to This Review**, in the Command Palette or a sidebar row's menu, copies the link for the open review or that row. Chat apps often don't make `vscode://` links clickable; pasting the GitHub link into **Open a Pull Request…** works everywhere.
@@ -228,7 +228,7 @@ What leaves it:
 - **An agent harness isn't found, or agents fail with a sign-in error.** **Diffline: Choose Agent Harnesses…** shows "not found" next to a CLI it can't run. Install it, or set `diffline.claude.path`, `diffline.codex.path` or `diffline.pi.path` to the full path (`which claude`, `which codex`, `which pi`). Run the CLI once in a terminal to sign in. A missing or signed-out CLI fails only the agents that use it.
 - **Pi agents fail with "No API key found" or "No models available".** Pi isn't signed in to a model provider. Run `pi` in a terminal, then `/login`, or set your provider's API key. If the log says a model isn't found, check `diffline.pi.model` or the agent's `model:`.
 - **Pi agents can't search (grep or find fail).** Pi's grep and find tools use ripgrep (`rg`) and fd. Pi normally downloads them, but Diffline runs it offline, so it won't. Install both, or run `pi` once in a terminal so it downloads them. Without them, the agents can still read and list files.
-- **Agents fail or find nothing.** **Diffline: Show Agent Log** has each run's agents, errors, tokens and cost. Problems in `agents.yml`, like a bad id or an agent without instructions, are listed there too. For more, each run keeps every agent's prompt, raw output and log in the extension's global storage, under `runs/` (on macOS, `~/Library/Application Support/Code/User/globalStorage/arminkarimi.diffline/runs`).
+- **Agents fail or find nothing.** **Diffline: Show Agent Log** has each run's agents, errors, tokens and cost. Problems in `agents.yml`, like a bad id or an agent without instructions, are listed there too. For more, each run keeps every agent's prompt, raw output and log in the extension's global storage, under `runs/` (on macOS, `~/Library/Application Support/Code/User/globalStorage/diffline.diffline/runs`).
 - **Agents say they're running in another window.** Another VS Code window is running them. Stop them there, or wait.
 - **A Diffline link does nothing.** The link's scheme must be your editor's: `vscode://` for VS Code, `cursor://` for Cursor. Or paste the GitHub link into **Open a Pull Request…**. A link Diffline can't read shows a warning, such as "Diffline: That link doesn't name a GitHub pull request.", with the formats it takes.
 - **Opening a pull request is slow.** **Diffline: Show Agent Log** has a line for each open, such as `Opened acme/web#123 in 1210 ms (data 1150 ms, page 20 ms, rendered 40 ms)`, or for one that opened in two parts `Opened acme/web#123 in 4210 ms: the page in 980 ms (detail 870 ms, page 20 ms, rendered 90 ms), the changes in 4210 ms (diff 1900 ms, rendered 2300 ms)`. `detail` is when GitHub answered and `diff` when the commits were in and the diff built, both counted from the open (`data` is both, in one part); `page` is building the page and `rendered` drawing it. A slow `detail` is GitHub; a slow `rendered` is a large diff. `(from cache)` at the end means it opened from details fetched earlier.

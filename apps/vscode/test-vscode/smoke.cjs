@@ -19,7 +19,7 @@ const PR = process.env.DIFFLINE_SMOKE_PR;
 exports.run = async () => {
   const log = [];
   const step = (s) => { log.push(s); console.log(`[smoke] ${s}`); };
-  const ext = vscode.extensions.getExtension("arminkarimi.diffline");
+  const ext = vscode.extensions.getExtension("diffline.diffline");
   assert.ok(ext, "extension is installed");
   let t = Date.now();
   const api = await ext.activate();

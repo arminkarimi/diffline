@@ -4,6 +4,7 @@ import { GUIDE, shortName } from "./agents/defaults.ts";
 import { HARNESS_IDS, HARNESS_NAME, harnessVersion, isHarnessId, listPiModels, PI_THINKING, piModelThinking, type HarnessConfig, type HarnessId } from "./agents/harness.ts";
 import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, removeAgent, resetSettings, setAgentHarness, setAgentModel, settingsDir, settingsFile } from "./agents/settings.ts";
 import { clipboardPullRequest, parseOpenLink, reviewLink } from "./core/links.ts";
+import { adoptOldStorage, OLD_EXTENSION_ID } from "./core/migrate.ts";
 import { Repos } from "./core/repos.ts";
 import { approverWords, DifflineService, parseKey, RECENTLY_CLOSED_DAYS, type ApprovedPolicy, type ServiceConfig } from "./core/service.ts";
 import { Store } from "./core/store.ts";
@@ -80,10 +81,41 @@ export interface DifflineApi {
   openLink(key: PrKey): Promise<void>;
 }
 
-export async function activate(context: vscode.ExtensionContext): Promise<DifflineApi> {
+/**
+ * Before 0.4.1 Diffline's ID was arminkarimi.diffline. Both can't run at once (same commands and views), so while the
+ * old one is installed this one only keeps a copy of its storage and offers to uninstall it.
+ */
+async function replaceOldExtension(storage: string, log: (line: string) => void): Promise<void> {
+  const action = "Uninstall and Reload";
+  const choice = await vscode.window.showWarningMessage(
+    `Diffline's ID changed, and the old Diffline (${OLD_EXTENSION_ID}) is still installed, so this one isn't running. Uninstall the old one and reload; your reviews, drafts and metrics come along.`,
+    action,
+  );
+  if (choice !== action) return;
+  try {
+    await adoptOldStorage(storage, true);
+    await vscode.commands.executeCommand("workbench.extensions.uninstallExtension", OLD_EXTENSION_ID);
+    await vscode.commands.executeCommand("workbench.action.reloadWindow");
+  } catch (err) {
+    log(`Couldn't uninstall ${OLD_EXTENSION_ID}: ${(err as Error).message}`);
+    void vscode.window.showErrorMessage(`Diffline: uninstall ${OLD_EXTENSION_ID} from the Extensions view, then reload the window.`);
+  }
+}
+
+export async function activate(context: vscode.ExtensionContext): Promise<DifflineApi | undefined> {
   const output = vscode.window.createOutputChannel("Diffline", { log: true });
   const log = (line: string) => output.info(line);
   context.subscriptions.push(output);
+
+  const storage = context.globalStorageUri.fsPath;
+  const oldInstalled = Boolean(vscode.extensions.getExtension(OLD_EXTENSION_ID));
+  const adopted = await adoptOldStorage(storage, oldInstalled).catch((err: Error) => (log(`Couldn't bring over the storage of ${OLD_EXTENSION_ID}: ${err.message}`), "none" as const));
+  if (adopted !== "none") log(`Brought over the reviews, drafts and metrics of ${OLD_EXTENSION_ID} (${adopted}).`);
+  if (oldInstalled) {
+    log(`${OLD_EXTENSION_ID} is installed too; this Diffline waits until it's uninstalled.`);
+    void replaceOldExtension(storage, log);
+    return undefined;
+  }
 
   const store = new Store(context.globalStorageUri.fsPath);
   await store.init();
@@ -407,7 +439,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     await vscode.env.clipboard.writeText(link);
     void vscode.window.showInformationMessage(`Copied a link that opens ${prKeyString(key)} in Diffline: ${link}`);
   });
-  // <scheme>://arminkarimi.diffline/open?pr=owner/name%23123 or ?url=<GitHub pull request link> (core/links.ts). The
+  // <scheme>://diffline.diffline/open?pr=owner/name%23123 or ?url=<GitHub pull request link> (core/links.ts). The
   // link can come from anywhere, so it's checked strictly and only ever opens a review.
   context.subscriptions.push(
     vscode.window.registerUriHandler({

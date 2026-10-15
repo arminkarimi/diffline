@@ -114,6 +114,10 @@ export const env = {
   },
   openExternal: async () => true,
 };
+/** Installed extensions other than Diffline, by ID. */
+export const installed = new Set<string>();
+export const extensions = { getExtension: (id: string) => (installed.has(id) ? { id } : undefined) };
+
 export const commands = {
   executeCommand: async (...args: unknown[]) => void executed.push(args),
   registerCommand: (id: string, fn: (...args: any[]) => unknown) => {

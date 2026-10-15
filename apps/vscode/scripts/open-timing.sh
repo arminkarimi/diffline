@@ -12,9 +12,9 @@ TMP=$(mktemp -d)
 mkdir -p "$TMP/user/User"
 if [ -n "$DIFFLINE_TIMING_SEED" ]; then
   REPO=$(echo "${DIFFLINE_SMOKE_PR%%#*}" | tr '/' '_' | sed 's/_/__/' | tr 'A-Z' 'a-z')
-  mkdir -p "$TMP/user/User/globalStorage/arminkarimi.diffline/clones"
-  cp -c -R "$DIFFLINE_TIMING_SEED" "$TMP/user/User/globalStorage/arminkarimi.diffline/clones/$REPO" 2>/dev/null ||
-    cp -R "$DIFFLINE_TIMING_SEED" "$TMP/user/User/globalStorage/arminkarimi.diffline/clones/$REPO"
+  mkdir -p "$TMP/user/User/globalStorage/diffline.diffline/clones"
+  cp -c -R "$DIFFLINE_TIMING_SEED" "$TMP/user/User/globalStorage/diffline.diffline/clones/$REPO" 2>/dev/null ||
+    cp -R "$DIFFLINE_TIMING_SEED" "$TMP/user/User/globalStorage/diffline.diffline/clones/$REPO"
 fi
 # Only this pull request is listed (pinned when it opens), so the sidebar's searches and the diffs it prepares for
 # other pull requests don't run alongside the opens being timed, and few GitHub requests are made.
