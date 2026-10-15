@@ -27,6 +27,8 @@ Every changed file is in exactly one chapter. Files the guide leaves out go into
 
 You can regroup at any time: **Chapters**, **Commits** (one chapter per commit, in the order they were pushed) or **Folders**. Without a guide run, the page groups files automatically by layer (data and schema, core logic, interface, tests, then configuration and docs), each in dependency order.
 
+In the sidebar, the arrow next to a chapter collapses its file list, and Alt-click (Option-click on macOS) collapses or expands every chapter. A collapsed chapter shows how many hunks are left, and is highlighted while you read one of its files. Collapsed chapters stay collapsed while the page is open.
+
 ## The description check
 
 Before you read the code, the guide checks the pull request's description against the rules for its kind of change.

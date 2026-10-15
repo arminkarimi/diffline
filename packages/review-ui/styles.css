@@ -781,6 +781,15 @@ textarea:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px
   color: var(--ink); text-decoration: none; font-size: 13.5px; font-weight: 680;
 }
 .g-ch-title:hover { background: var(--sheet-3); }
+.g-ch-head { display: flex; align-items: center; gap: 2px; }
+.g-ch-head .g-ch-title { flex: 1; min-width: 0; }
+.g-ch-toggle { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border: 0; border-radius: 6px; background: none; color: var(--ink-3); }
+.g-ch-toggle:hover { background: var(--sheet-3); color: var(--ink); }
+.g-ch-toggle .i { transition: transform .2s; }
+.g-ch.is-shut .g-ch-toggle .i { transform: rotate(-90deg); }
+.g-ch-left { margin-left: auto; flex: none; font-size: 12px; font-weight: 560; color: var(--ink-3); }
+.g-ch.has-current .g-ch-title { background: var(--sheet); box-shadow: 0 0 0 1px var(--line), var(--shadow-1); }
+@media (prefers-reduced-motion: reduce) { .g-ch-toggle .i { transition: none; } }
 .g-n {
   display: grid; place-items: center; width: 20px; height: 20px; flex: none; border-radius: 50%;
   background: var(--sheet-3); color: var(--ink-2); font-size: 11px; font-weight: 800; font-variation-settings: "MONO" 0, "CASL" 1;

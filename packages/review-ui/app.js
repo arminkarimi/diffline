@@ -574,6 +574,7 @@ const S = {
   opened: new Set(),      // reviewed hunks the reader unfolded
   fileOpen: new Set(),    // files the reader expanded by hand
   fileShut: new Set(),    // files the reader collapsed by hand
+  chShut: new Set(),      // sidebar chapters the reader collapsed, "grouping:title"
   gaps: new Set(),        // expanded unchanged regions, "file:index"
   longOpen: new Set(),    // long changed lines the reader unfolded, "file:line"
   raw: new Set(),         // lockfiles showing the raw diff
@@ -2608,6 +2609,16 @@ function provenanceHTML() {
   return `<p class="g-by">${agentAv("xs")}<span>Drafted by the guide agent${S.planState === "edited" ? ". You adjusted it for your review" : ""}.</span> <button type="button" class="link" data-act="plan-open">See how</button></p>`;
 }
 
+// Collapsed chapters are remembered per grouping, by title, so they stay collapsed when the chapters are rebuilt.
+const chKey = (ch) => `${S.grouping}:${ch.title}`;
+
+function refreshGuide() {
+  const rail = $("#rail");
+  if (rail) rail.innerHTML = guideHTML();
+  const sheetGuide = $("#sheet-guide .sheet-body");
+  if (sheetGuide) sheetGuide.innerHTML = guideHTML();
+}
+
 function guideHTML() {
   const c = counts();
   return `<div class="guide">
@@ -2618,8 +2629,12 @@ function guideHTML() {
     ${agentsRowHTML()}
     <ol class="g-chapters">${chapters.map((ch) => {
       const p = chapterProgress(ch);
-      return `<li class="g-ch${p.all ? " is-done" : ""}"><a class="g-ch-title" href="#ch-${ch.n}" data-act="goto-ch" data-ch="${ch.n}"><span class="g-n">${ch.n}</span><span>${esc(ch.title)}</span>${p.all ? icon("check", "g-done") : ""}</a>
-        <ul>${ch.files.map(guideFileHTML).join("")}</ul></li>`;
+      const shut = S.chShut.has(chKey(ch));
+      const here = shut && ch.files.some((f) => f.i === S.current);
+      return `<li class="g-ch${p.all ? " is-done" : ""}${shut ? " is-shut" : ""}${here ? " has-current" : ""}" data-ch="${ch.n}"><div class="g-ch-head">
+        <a class="g-ch-title" href="#ch-${ch.n}" data-act="goto-ch" data-ch="${ch.n}"><span class="g-n">${ch.n}</span><span>${esc(ch.title)}</span>${p.all ? icon("check", "g-done") : shut && p.total ? `<span class="g-ch-left" title="${plural(p.total - p.done, "hunk")} left to review">${p.total - p.done} left</span>` : ""}</a>
+        <button type="button" class="g-ch-toggle" data-act="ch-toggle" data-ch="${ch.n}" aria-expanded="${!shut}" aria-label="${shut ? "Expand" : "Collapse"} ${esc(ch.title)}" title="${shut ? "Expand" : "Collapse"} (Alt-click: every chapter)">${icon("chev")}</button></div>
+        ${shut ? "" : `<ul>${ch.files.map(guideFileHTML).join("")}</ul>`}</li>`;
     }).join("")}</ol>
     <p class="g-keys"><kbd>j</kbd><kbd>k</kbd> move <kbd>r</kbd> reviewed <kbd>c</kbd> comment <button type="button" class="link" data-act="shortcuts">All shortcuts</button></p>
   </div>`;
@@ -4843,6 +4858,16 @@ const ACTIONS = {
     const node = document.getElementById(`f-${i}`);
     if (node && node.getBoundingClientRect().top < stickyOffset(false) - 8) scrollToEl(node, false);
   },
+  "ch-toggle": (el, e) => {
+    const ch = chapters[+el.dataset.ch - 1];
+    if (!ch) return;
+    const shut = !S.chShut.has(chKey(ch));
+    for (const c of e && e.altKey ? chapters : [ch]) {
+      if (shut) S.chShut.add(chKey(c)); else S.chShut.delete(chKey(c));
+    }
+    refreshGuide();
+    $$(`.g-ch-toggle[data-ch="${ch.n}"]`).forEach((b) => b.focus());
+  },
   "file-reviewed": (el) => toggleFile(+el.dataset.f),
   "toggle-hunk": (el) => { const key = el.dataset.h; if (!coarse.matches) S.focus = key; toggleHunk(key); },
   "hunk-open": (el) => {
@@ -5161,6 +5186,8 @@ function onScroll() {
   S.current = cur;
   $$(".g-file.is-current").forEach((a) => a.classList.remove("is-current"));
   if (cur != null) $$(`.g-file[data-f="${cur}"]`).forEach((a) => a.classList.add("is-current"));
+  const ch = cur != null && files[cur] ? files[cur].ch : null;
+  $$(".g-ch.is-shut").forEach((li) => li.classList.toggle("has-current", +li.dataset.ch === ch));
 }
 
 if (wide.addEventListener) {
