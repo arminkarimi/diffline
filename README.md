@@ -2,6 +2,8 @@
 
 Diffline is a VS Code extension for reviewing GitHub pull requests; it works in Cursor too. Review agents run on your computer, through the Claude Code CLI, the Codex CLI or Pi, before you read a line. They check the description, set a reading order, draw the flow the change touches and report findings. You review in one page, decide what goes into your review, and post it to GitHub. Nothing reaches GitHub until you press **Post now**.
 
+Website and docs: [diffline.dev](https://diffline.dev).
+
 ## Status
 
 Preview, version 0.3.2. It reviews real pull requests, and it has rough edges. Diffline isn't on the VS Code Marketplace yet. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
@@ -10,7 +12,7 @@ Preview, version 0.3.2. It reviews real pull requests, and it has rough edges. D
 
 You need VS Code 1.95 or later (or Cursor), git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI, the Codex CLI or Pi signed in.
 
-Install the `.vsix` file:
+Download the `.vsix` from [diffline.dev](https://diffline.dev/#install) or the [latest release](https://github.com/arminkarimi/diffline/releases/latest), then install it:
 
 ```sh
 code --install-extension diffline-0.3.2.vsix
@@ -61,6 +63,18 @@ CODE=cursor npm run install-local   # the same for Cursor
 
 Open `apps/vscode` in VS Code and press F5 to run the extension in a development window. [CONTRIBUTING.md](CONTRIBUTING.md) has the rest: the smoke tests, code style and how to cut a release. [docs/architecture.md](docs/architecture.md) explains how the extension works.
 
-## License
+## How it was built
 
-MIT. Copyright Armin Karimi. See [LICENSE](LICENSE).
+Diffline was built with [Claude Code](https://www.anthropic.com/claude-code) (Claude Opus 5.5) and [Codex](https://openai.com/codex/) (GPT-6.1 Sol).
+
+## Contributing
+
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup, checks and code style. Commits in a pull request need a `Signed-off-by` line ([Developer Certificate of Origin](https://developercertificate.org)); `git commit -s` adds it.
+
+Report security issues privately, not in a public issue: see [SECURITY.md](SECURITY.md).
+
+## License and trademark
+
+The code is MIT licensed. Copyright [Armin Karimi](https://arminkari.me). See [LICENSE](LICENSE).
+
+"Diffline" and the Diffline logo are trademarks of Armin Karimi. The MIT license covers the code, not the name or logo: a fork or a modified version you distribute needs its own name and icon, and must not suggest it's made or endorsed by Diffline. Saying your project is "based on Diffline" is fine.

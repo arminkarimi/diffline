@@ -106,6 +106,7 @@ DIFFLINE_SMOKE_PR=owner/name#123 ./scripts/open-timing.sh
 - A subject line in the imperative, under 72 characters: "Skip drafts in automatic runs", not "Skipped drafts" or "Fixes".
 - A body when the reason isn't obvious: what changed and why, in plain sentences.
 - One logical change per commit.
+- **Sign off every commit** (`git commit -s`). The `Signed-off-by: Your Name <you@example.com>` line certifies the [Developer Certificate of Origin](https://developercertificate.org): that you wrote the change or have the right to submit it under the project's MIT license. Pull requests with unsigned commits can't be merged. To sign off commits you already made: `git rebase --signoff main`.
 
 ## Private data stays out
 
