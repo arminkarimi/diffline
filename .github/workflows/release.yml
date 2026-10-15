@@ -1,0 +1,164 @@
+name: Release
+
+# Pushing a v* tag (v0.4.0) checks and packages the extension, creates the GitHub release with the .vsix and the
+# version's CHANGELOG section, and publishes the same .vsix to the VS Code Marketplace and Open VSX.
+# Run it by hand (Actions > Release > Run workflow) for a dry run: it checks and packages, uploads the .vsix as a
+# workflow artifact, and publishes nothing. CONTRIBUTING.md ("Cutting a release") has the one-time setup.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: only package and upload the .vsix as a workflow artifact. Untick only on a v* tag, to retry a release."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The publishing tools, pinned. vsce matches the version in package-lock.json, which packages the .vsix.
+  VSCE_VERSION: 4.0.0
+  OVSX_VERSION: 1.2.0
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 26
+          cache: npm
+
+      # A release publishes the version in package.json, so it has to be the version the tag names.
+      - name: Check the version against the tag
+        id: version
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./apps/vscode/package.json').version")
+          publish=true
+          if [ "$DRY_RUN" = true ]; then publish=false; fi
+          if [ "$REF_TYPE" = tag ]; then
+            if [ "$REF_NAME" != "v$version" ]; then
+              echo "::error::The tag is $REF_NAME, but apps/vscode/package.json says $version. Tag v$version, or bump the version and tag again."
+              exit 1
+            fi
+          elif [ "$publish" = true ]; then
+            echo "::error::A release runs on a v* tag. Run the workflow on the tag, or as a dry run."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Version $version, publish: $publish"
+
+      # git comes with the runner; the tests use it to build a sample repository as a fixture.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      - name: Build the extension package
+        run: npm run package -w apps/vscode
+
+      # The listing shows the packaged README, so its images and links must be absolute (https) URLs.
+      - name: Check the packaged README's links
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          readme=$(unzip -p "apps/vscode/diffline-$VERSION.vsix" extension/readme.md)
+          relative=$(printf '%s\n' "$readme" | grep -noE '\]\([^)#][^)]*\)' | grep -vE '\]\((https|mailto):' || true)
+          if [ -n "$relative" ]; then
+            echo "::error::The packaged README has links that aren't https URLs:"
+            printf '%s\n' "$relative"
+            exit 1
+          fi
+
+      - name: Take the release notes from the CHANGELOG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBLISH: ${{ steps.version.outputs.publish }}
+        run: |
+          awk -v heading="## $VERSION" '$0 == heading { on = 1; next } on && /^## / { exit } on { print }' apps/vscode/CHANGELOG.md \
+            | sed '/./,$!d' > apps/vscode/release-notes.md
+          if ! grep -q '[^[:space:]]' apps/vscode/release-notes.md; then
+            if [ "$PUBLISH" = true ]; then
+              echo "::error::apps/vscode/CHANGELOG.md has no '## $VERSION' section. Rename Unreleased to $VERSION and say what changed."
+              exit 1
+            fi
+            echo "::warning::apps/vscode/CHANGELOG.md has no '## $VERSION' section yet. A release would stop here."
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: diffline-${{ steps.version.outputs.version }}
+          path: |
+            apps/vscode/diffline-${{ steps.version.outputs.version }}.vsix
+            apps/vscode/release-notes.md
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: needs.package.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+    env:
+      VERSION: ${{ needs.package.outputs.version }}
+      VSIX: release/diffline-${{ needs.package.outputs.version }}.vsix
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: diffline-${{ needs.package.outputs.version }}
+          path: release
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 26
+
+      # Safe to run again: an existing release gets the .vsix replaced, and the stores skip a version they already have.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" "$VSIX" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$VSIX" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "Diffline $VERSION" --notes-file release/release-notes.md
+          fi
+
+      # vsce reads the token from VSCE_PAT. To use Microsoft Entra ID instead of a PAT, see CONTRIBUTING.md.
+      - name: Publish to the VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::notice::Skipped the VS Code Marketplace: the VSCE_PAT secret isn't set."
+            exit 0
+          fi
+          npx --yes "@vscode/vsce@$VSCE_VERSION" publish --packagePath "$VSIX" --skip-duplicate
+
+      # ovsx reads the token from OVSX_PAT.
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "::notice::Skipped Open VSX: the OVSX_PAT secret isn't set."
+            exit 0
+          fi
+          npx --yes "ovsx@$OVSX_VERSION" publish --packagePath "$VSIX" --skip-duplicate

@@ -1,7 +1,7 @@
 {
   "name": "diffline",
   "displayName": "Diffline",
-  "description": "Review GitHub pull requests in VS Code with Claude Code, Codex or Pi agents that run on your computer: description checks, reading order, flow maps and findings, then post your review.",
+  "description": "Review GitHub pull requests in VS Code or Cursor with Claude Code, Codex or Pi agents that run on your computer: description checks, reading order, flow maps and findings, then post your review.",
   "version": "0.3.2",
   "publisher": "arminkarimi",
   "preview": true,
@@ -22,14 +22,19 @@
   "keywords": [
     "github",
     "pull request",
+    "pull requests",
     "code review",
     "review",
+    "pr review",
+    "ai code review",
+    "ai",
     "agents",
     "claude",
     "claude code",
     "codex",
     "pi",
-    "gh"
+    "gh",
+    "cursor"
   ],
   "main": "./dist/extension.cjs",
   "activationEvents": [
@@ -574,7 +579,7 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test --test-reporter=spec test/*.test.ts",
     "vscode:prepublish": "node esbuild.mjs --production",
-    "package": "vsce package --no-dependencies",
+    "package": "vsce package --no-dependencies --baseContentUrl https://github.com/arminkarimi/diffline/blob/main/apps/vscode --baseImagesUrl https://raw.githubusercontent.com/arminkarimi/diffline/main/apps/vscode",
     "install-local": "sh scripts/install-local.sh"
   },
   "dependencies": {
@@ -597,5 +602,7 @@
   "bugs": {
     "url": "https://github.com/arminkarimi/diffline/issues"
   },
-  "homepage": "https://github.com/arminkarimi/diffline/tree/main/apps/vscode#readme"
+  "homepage": "https://diffline.dev",
+  "qna": "https://github.com/arminkarimi/diffline/issues",
+  "pricing": "Free"
 }

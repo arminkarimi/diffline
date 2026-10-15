@@ -1,7 +1,8 @@
 // Builds the review page for a real pull request the way the VS Code panel does, but with a stand-in for VS Code's
 // webview messaging, so the page can be checked in a browser. Writes .dev/index.html next to copies of media/ui.
 //   node scripts/dev-page.ts owner/name#123 --clone /path [--agent agent-file.json]
-// --sample builds it from test/fixtures/review-data.json instead, without GitHub. --metrics adds the review metrics
+// --sample builds it from test/fixtures/review-data.json instead, without GitHub (--agent works there too, such as
+// --agent test/fixtures/agent-file.json for the briefing and findings). --metrics adds the review metrics
 // report: --metrics sample (made-up events), --metrics events.jsonl, --metrics empty or --metrics off; --start metrics
 // opens the page on it. With --sample, --state sets your review and the pull request's state: never, approved, changes,
 // commented, requested (re-requested after you approved), dismissed, merged, closed, rewritten (force-pushed, the
@@ -71,6 +72,8 @@ async function sampleReview() {
   const alex = { login: "alex-doe", name: "Alex Doe" };
   const pr: Record<string, any> = { title: "Add promo codes at checkout", author: alex, body: "Adds promo codes to checkout.", createdAt: ago(4), updatedAt: ago(0.1), state: "OPEN", isDraft: false, headRefOid: data.head.sha, baseRefName: "main", checks: [], reviewRequests: [], latestReviews: [], reviews: [], comments: [], lastReview: null, mergedAt: null, mergedBy: null, closedAt: null };
   const threads: any[] = [];
+  // --agent: an agent review to show, such as test/fixtures/agent-file.json (its commit is the fixture's head).
+  const agent = opt("agent") ? JSON.parse(await readFile(opt("agent")!, "utf8")) : null;
   // --state: your review of it, and how it ended.
   const state = opt("state") || "never";
   const review = (st: string, commit: string | null, days = 2) => {
@@ -97,7 +100,8 @@ async function sampleReview() {
   }
   const repo = `${key.owner}/${key.name}`;
   const row = (n: number, extra: Record<string, unknown>) => ({ key: `${repo}#${n}`, repo, number: n, author: alex, state: "OPEN", isDraft: false, requested: false, additions: 40 + n, deletions: n, checks: { total: 3, failed: 0, running: 0 }, agent: { findings: 2, openHigh: 0, open: 1 }, viewerReview: null, viewerLastReview: null, sinceReview: null, reviewCounts: { approvals: 0, changesRequested: 0 }, mergedAt: null, closedAt: null, ...extra });
-  const current = row(key.number, { title: pr.title, state: pr.state, requested: pr.reviewRequests.length > 0, agent: null, mergedAt: pr.mergedAt, closedAt: pr.closedAt, viewerReview: pr.latestReviews[0]?.state ?? null, viewerLastReview: pr.lastReview ? { state: pr.lastReview.state, at: pr.lastReview.submittedAt, commit: pr.lastReview.commit } : null, sinceReview: pr.lastReview ? { newCommits: true, updated: true } : null, reviewCounts: { approvals: pr.latestReviews.filter((r: any) => r.state === "APPROVED").length, changesRequested: 0 } });
+  const changed = (sign: string) => data.files.reduce((n: number, f: any) => n + f.hunks.reduce((m: number, h: any) => m + h.lines.filter((l: any[]) => l[0] === sign).length, 0), 0);
+  const current = row(key.number, { title: pr.title, additions: changed("+"), deletions: changed("-"), state: pr.state, requested: pr.reviewRequests.length > 0, agent: agent ? { findings: agent.findings.length, openHigh: agent.findings.filter((f: any) => f.severity === "high").length, open: agent.findings.length } : null, mergedAt: pr.mergedAt, closedAt: pr.closedAt, viewerReview: pr.latestReviews[0]?.state ?? null, viewerLastReview: pr.lastReview ? { state: pr.lastReview.state, at: pr.lastReview.submittedAt, commit: pr.lastReview.commit } : null, sinceReview: pr.lastReview ? { newCommits: true, updated: true } : null, reviewCounts: { approvals: pr.latestReviews.filter((r: any) => r.state === "APPROVED").length, changesRequested: 0 } });
   const list = [
     current,
     row(31, { title: "Fix rounding in invoice totals", isDraft: true, requested: true, viewerReview: "APPROVED", viewerLastReview: { state: "COMMENTED", at: ago(0.2), commit: "a".repeat(40) }, sinceReview: { newCommits: false, updated: true }, reviewCounts: { approvals: 1, changesRequested: 0 } }),
@@ -108,7 +112,7 @@ async function sampleReview() {
   ];
   const live = {
     repo, number: key.number, url: `https://github.com/${repo}/pull/${key.number}`, github: true, githubError: null,
-    viewer, pr, threads, loadedAt: new Date().toISOString(), token: "", api: "", agent: null, state: null,
+    viewer, pr, threads, loadedAt: new Date().toISOString(), token: "", api: "", agent, state: null,
     list,
     groups: [
       { id: "requested", label: "Review requested", description: "", collapsed: false, keys: [k, `${repo}#31`] },

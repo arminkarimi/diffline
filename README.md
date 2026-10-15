@@ -6,19 +6,15 @@ Website and docs: [diffline.dev](https://diffline.dev).
 
 ## Status
 
-Preview, version 0.3.2. It reviews real pull requests, and it has rough edges. Diffline isn't on the VS Code Marketplace yet. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
+Preview, version 0.3.2. It reviews real pull requests, and it has rough edges. Changes are listed in the [changelog](apps/vscode/CHANGELOG.md).
 
 ## Install
 
 You need VS Code 1.95 or later (or Cursor), git, the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`), and the Claude Code CLI, the Codex CLI or Pi signed in.
 
-Download the `.vsix` from [diffline.dev](https://diffline.dev/#install) or the [latest release](https://github.com/arminkarimi/diffline/releases/latest), then install it:
+Install Diffline from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=arminkarimi.diffline): search for **Diffline** in the Extensions view, or run `code --install-extension arminkarimi.diffline`. Cursor, VSCodium and Windsurf install it from [Open VSX](https://open-vsx.org/extension/arminkarimi/diffline) the same way (`cursor --install-extension arminkarimi.diffline`).
 
-```sh
-code --install-extension diffline-0.3.2.vsix
-```
-
-Or in VS Code: Extensions view, **…** → **Install from VSIX…**. In Cursor, run `cursor --install-extension diffline-0.3.2.vsix`, or **Extensions: Install from VSIX…** from the Command Palette. To build the `.vsix` yourself, see [Development](#development).
+Or download the `.vsix` from [diffline.dev](https://diffline.dev/#install) or the [latest release](https://github.com/arminkarimi/diffline/releases/latest) and install it with **Extensions: Install from VSIX…** or `code --install-extension diffline-0.3.2.vsix`. To build the `.vsix` yourself, see [Development](#development).
 
 The [extension's README](apps/vscode/README.md) covers the first run, settings, costs, privacy and troubleshooting.
 

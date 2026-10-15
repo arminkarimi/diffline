@@ -4,7 +4,23 @@ Review GitHub pull requests in VS Code or Cursor with agents that run on your co
 
 This is a preview. Expect rough edges, and check the log (**Diffline: Show Agent Log**) when something looks wrong.
 
-Every feature is described in [Features](https://github.com/arminkarimi/diffline/blob/main/docs/features.md).
+Website and docs: [diffline.dev](https://diffline.dev). Every feature is described in [Features](https://github.com/arminkarimi/diffline/blob/main/docs/features.md).
+
+**The agents' briefing.** The opening line, the description check, the flow and the findings to decide, before you read the diff.
+
+![The review page of a pull request: the agents' briefing with the description check, the flow and four findings](media/screenshots/briefing.png)
+
+**Findings in the diff.** Each finding sits on its line. Add it to your review, copy it or dismiss it.
+
+![A correctness agent's finding on a changed line, with Add to my review, Copy and Dismiss](media/screenshots/finding.png)
+
+**The Map.** The flow the change touches, drawn by the guide agent. Every numbered box links to the lines it stands for.
+
+![The Map: the flow from the checkout field to the redemption count, with new, changed and removed steps and their findings](media/screenshots/map.png)
+
+**Home.** Your pull requests grouped like the sidebar, with the risk score, your last review and what changed since.
+
+![Home: pull requests grouped by review requested and you reviewed, with review status, approvals and risk](media/screenshots/home.png)
 
 ## What you need
 
@@ -15,13 +31,13 @@ Every feature is described in [Features](https://github.com/arminkarimi/diffline
 
 ## Install
 
-Diffline isn't on the Marketplace yet. Install the `.vsix` file, from a [release](https://github.com/arminkarimi/diffline/releases) or built with `npm run package` (see [Development](#development)):
+Diffline is on the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=arminkarimi.diffline) and on [Open VSX](https://open-vsx.org/extension/arminkarimi/diffline).
 
-- In VS Code: open the Extensions view, then **…** → **Install from VSIX…**, and pick `diffline-0.3.2.vsix`.
-- Or in a terminal: `code --install-extension diffline-0.3.2.vsix`.
-- In Cursor: run **Extensions: Install from VSIX…** from the Command Palette and pick the file, or in a terminal `cursor --install-extension diffline-0.3.2.vsix`. If `cursor` isn't found, run **Shell Command: Install 'cursor' command** from the Command Palette first. Diffline isn't on Open VSX yet.
+- **VS Code**: search for **Diffline** in the Extensions view and press **Install**. Or open Quick Open (**⌘P** on macOS, **Ctrl+P** on Windows and Linux), enter `ext install arminkarimi.diffline` and press Enter. Or in a terminal: `code --install-extension arminkarimi.diffline`.
+- **Cursor, VSCodium, Windsurf** and other editors that install from Open VSX: search for **Diffline** in the Extensions view and install it. In Cursor you can also run `cursor --install-extension arminkarimi.diffline` in a terminal; if `cursor` isn't found, run **Shell Command: Install 'cursor' command** from the Command Palette first.
+- **From a `.vsix` file**: download `diffline-<version>.vsix` from a [release](https://github.com/arminkarimi/diffline/releases), or build it with `npm run package` (see [Development](#development)). Then run **Extensions: Install from VSIX…** from the Command Palette and pick the file, or in a terminal `code --install-extension diffline-<version>.vsix` (`cursor --install-extension` in Cursor).
 
-Reload the window if VS Code asks. To update, install the newer `.vsix` the same way. To remove Diffline, uninstall it from the Extensions view; `~/.diffline` stays until you delete it.
+Reload the window if your editor asks. Installed from a store, Diffline updates like your other extensions; to update a `.vsix` install, install the newer file the same way. To remove Diffline, uninstall it from the Extensions view; `~/.diffline` stays until you delete it.
 
 ## First run
 

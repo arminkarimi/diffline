@@ -63,6 +63,7 @@ node scripts/e2e-agents.ts owner/name#123 --clone /path/to/clone
 | Flag | What it does |
 | --- | --- |
 | `--sample` | Builds the page from `test/fixtures/review-data.json` instead of GitHub. The views work; nothing can be posted. |
+| `--agent <file>` | Shows an agent review from a file, such as `test/fixtures/agent-file.json` (the briefing and findings). Works with `--sample` too. |
 | `--metrics sample\|<file>\|empty\|off` | Gives the page a review metrics report: from made-up events, from a log file (`events.jsonl`), from an empty log, or with metrics turned off. |
 | `--start metrics` | Opens the page on the review metrics report. |
 | `--staged <ms>` | Opens the page without the diff ("Loading the changes…") and sends it that many ms later, as the panel does for a pull request whose diff isn't built yet. `--staged-error <ms>` sends a failure instead. |
@@ -120,14 +121,16 @@ Check your diff for this before you push.
 
 ## Cutting a release
 
+Pushing a version tag runs `.github/workflows/release.yml`: it runs the typecheck and tests, packages the `.vsix`, creates the GitHub release with the `.vsix` and the version's CHANGELOG section, and publishes the same `.vsix` to the VS Code Marketplace and Open VSX. It stops if the tag isn't `v` plus the version in `apps/vscode/package.json`, or if the CHANGELOG has no section for that version.
+
 1. Bump the version in `apps/vscode/package.json`:
 
    ```sh
-   npm version 0.2.0 -w apps/vscode --no-git-tag-version
+   npm version 0.4.0 -w apps/vscode --no-git-tag-version
    ```
 
-2. In `apps/vscode/CHANGELOG.md`, rename **Unreleased** to the new version and say what changed for users.
-3. Update the `.vsix` file name in the install steps of `README.md` and `apps/vscode/README.md`.
+2. In `apps/vscode/CHANGELOG.md`, rename **Unreleased** to the new version (`## 0.4.0`) and say what changed for users. That section becomes the release notes and shows on the stores' Changelog tab.
+3. Update the version in the root `README.md` (**Status** and the `.vsix` file name).
 4. Run the checks and build the package:
 
    ```sh
@@ -135,10 +138,30 @@ Check your diff for this before you push.
    ```
 
 5. Install `apps/vscode/diffline-<version>.vsix` in VS Code and open a pull request with it.
-6. Commit ("Diffline 0.2.0"), tag it `v0.2.0`, push, and attach the `.vsix` to a GitHub release:
+6. Commit ("Diffline 0.4.0"), tag and push:
 
    ```sh
-   gh release create v0.2.0 apps/vscode/diffline-0.2.0.vsix --title "Diffline 0.2.0"
+   git tag v0.4.0
+   git push origin main v0.4.0
    ```
 
-   Use the version's CHANGELOG section as the release notes.
+   The workflow does the rest. Each publish step that has no token (see below) is skipped with a notice, so the GitHub release still goes out. Running the workflow again on the same tag is safe: the release gets the `.vsix` replaced, and the stores skip a version they already have.
+
+**Dry run.** Actions → **Release** → **Run workflow**, with **Dry run** ticked (the default), checks and packages the current branch and uploads the `.vsix` and the release notes as a workflow artifact. It publishes nothing. Run on a tag with **Dry run** unticked to retry a release.
+
+**The packaged README.** The stores show `apps/vscode/README.md` from the `.vsix`. `npm run package` rewrites its relative links to `https://github.com/arminkarimi/diffline/blob/main/apps/vscode/…` and its images to `https://raw.githubusercontent.com/arminkarimi/diffline/main/apps/vscode/…` (vsce doesn't use the `repository.directory` field), so images must be PNG or JPEG on `main`; SVG isn't allowed. The screenshots are in `apps/vscode/media/screenshots` and stay out of the `.vsix`. To retake them, build the review page on the fixture data (after `npm run build`, from `apps/vscode`; it writes `.dev/index.html`), open it in a browser at 1280×800 with 2× scale in the light theme, and capture the briefing, a finding, the Map and Home (`#inbox`):
+
+```sh
+node scripts/dev-page.ts --sample --agent test/fixtures/agent-file.json --state approved
+```
+
+### One-time setup
+
+The repository owner does this once. Nobody else needs these accounts or tokens.
+
+1. **VS Code Marketplace publisher.** Sign in at [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage) and create the publisher `arminkarimi` (the `publisher` in `apps/vscode/package.json`).
+2. **Marketplace token.** In Azure DevOps ([dev.azure.com](https://dev.azure.com)), create a personal access token with **Organization: All accessible organizations** and the **Marketplace → Manage** scope. Check it with `npx @vscode/vsce verify-pat arminkarimi`. Add it to the repository as the Actions secret `VSCE_PAT` (Settings → Secrets and variables → Actions).
+3. **Open VSX namespace.** Sign in at [open-vsx.org](https://open-vsx.org) with GitHub, link an Eclipse account and sign the publisher agreement in your profile settings, then create an access token there. Create the namespace once: `npx ovsx create-namespace arminkarimi -p <token>`. Add the token as the Actions secret `OVSX_PAT`. To show the namespace as verified, claim it in the Open VSX repository's issues.
+4. Push a tag.
+
+Without a PAT: the Marketplace also accepts a Microsoft Entra ID identity. Create an app registration or managed identity in Entra ID with a federated credential for this repository's tags, add it to the publisher as a member, give the publish job `id-token: write`, sign in with `azure/login`, and publish with `npx @vscode/vsce publish --azure-credential --packagePath <vsix>`. The workflow implements the PAT route.

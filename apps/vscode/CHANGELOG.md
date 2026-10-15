@@ -1,10 +1,15 @@
 # Changelog
 
+## Unreleased
+
+On the VS Code Marketplace and Open VSX.
+
+- **Install from the Marketplace or Open VSX.** Search for Diffline in the Extensions view, or run `ext install arminkarimi.diffline`. Cursor, VSCodium and Windsurf install it from Open VSX. The `.vsix` from a GitHub release still works.
+- **Screenshots in the README**: the agents' briefing, a finding in the diff, the Map and Home.
+
 ## 0.3.2
 
 Open a review from a link, and see the pull request before its diff is ready.
-
-Open a pull request from a link, and see its page before the diff is drawn.
 
 - **Open a review from a link.** `vscode://arminkarimi.diffline/open?url=<GitHub pull request link>` or `?pr=owner/name%23123` (`cursor://` in Cursor) opens that review from a browser, a chat or a terminal. A link only opens the review and adds it to the sidebar; it never runs the agents or posts anything, and one Diffline can't read shows a warning. **Diffline: Copy Link to This Review**, in the Command Palette or a sidebar row's menu, copies the link. **Open a Pull Request…** has a shortcut, **⌥⇧⌘P** on macOS and **Ctrl+Shift+Alt+P** on Windows and Linux, and starts with the pull request on your clipboard.
 - **The page shows before the diff.** Opening a pull request no longer refreshes the sidebar. The page shows as soon as GitHub answers, with the description, Discussion, Workflow, checks and the agent briefing, and "Loading the changes…" until the diff is ready; then the changes fill in without a reload. Diffline fetches the pull request's head while GitHub answers. On a large pull request the page shows in about 1 s instead of 4 to 8 s; drawing a large diff still takes about 3 s. Small pull requests open in one go.
