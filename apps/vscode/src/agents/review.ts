@@ -61,6 +61,8 @@ export interface AgentRunRecord {
   id: string;
   harness: string;
   model: string | null;
+  /** Other models the harness called for side work (Claude Code only); left out when there are none. */
+  otherModels?: string[];
   thinking?: string | null;
   /** The lede's instructions are Diffline's own, so it has none. */
   instructions: string | null;
@@ -190,10 +192,10 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
   const failed: AgentFailure[] = [];
   let cost: number | null = null;
   let tokens: TokenUsage | null = null;
-  const usage: Record<string, { harness: HarnessId; model: string | null; ms: number; costUsd: number | null; tokens: TokenUsage | null }> = {};
+  const usage: Record<string, { harness: HarnessId; model: string | null; otherModels?: string[]; ms: number; costUsd: number | null; tokens: TokenUsage | null }> = {};
 
   const records = new Map<string, AgentRunRecord>();
-  const record = (id: AgentId | "lede", reportedModel: string | null, rest: Pick<AgentRunRecord, "ms" | "tokens" | "costUsd"> & { failed?: AgentRunRecord["failed"] }) => {
+  const record = (id: AgentId | "lede", reportedModel: string | null, rest: Pick<AgentRunRecord, "ms" | "tokens" | "costUsd" | "otherModels"> & { failed?: AgentRunRecord["failed"] }) => {
     const cfg = runConfig(id, input.settings, input.harnesses, reportedModel);
     const r: AgentRunRecord = { id, ...cfg, instructions: id === "lede" ? null : cfg.instructions!, ...rest, findings: 0 } as AgentRunRecord;
     records.set(id, r);
@@ -224,12 +226,13 @@ export async function runReview(input: ReviewRunInput): Promise<ReviewRunResult>
         await writeFile(path.join(input.runDir, `${id}.json`), JSON.stringify(res.output, null, 1), "utf8");
         if (res.costUsd !== null) cost = (cost ?? 0) + res.costUsd;
         tokens = addTokens(tokens, res.tokens);
-        usage[id] = { harness: harness.id, model: res.model, ms: res.durationMs, costUsd: res.costUsd, tokens: res.tokens };
-        record(id, res.model, { ms: res.durationMs, tokens: res.tokens, costUsd: res.costUsd });
+        const others = res.otherModels?.length ? { otherModels: res.otherModels } : {};
+        usage[id] = { harness: harness.id, model: res.model, ...others, ms: res.durationMs, costUsd: res.costUsd, tokens: res.tokens };
+        record(id, res.model, { ...others, ms: res.durationMs, tokens: res.tokens, costUsd: res.costUsd });
         progress.agents[id] = { state: "done", harness: harness.id, ms: res.durationMs, costUsd: res.costUsd, tokens: res.tokens };
         emit();
         void log(
-          `${id} done on ${harness.id}${res.model ? ` (${res.model})` : ""} in ${Math.round(res.durationMs / 1000)}s` +
+          `${id} done on ${harness.id}${res.model ? ` (${res.model}${others.otherModels ? `, also ${others.otherModels.join(", ")}` : ""})` : ""} in ${Math.round(res.durationMs / 1000)}s` +
             `${res.costUsd !== null ? `, $${res.costUsd.toFixed(3)}` : ""}${res.tokens ? `, ${formatTokens(res.tokens)}` : ""}`,
         );
         return res.output as T;

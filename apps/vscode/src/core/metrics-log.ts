@@ -205,6 +205,7 @@ export function runEvent(key: PrKey, r: { head: string | null; run: string | nul
       id: a.id,
       harness: a.harness,
       model: a.model,
+      ...(a.otherModels?.length ? { otherModels: a.otherModels } : {}),
       ...(a.thinking !== undefined ? { thinking: a.thinking } : {}),
       instructions: a.instructions,
       ms: Math.max(0, Math.round(a.ms)),

@@ -55,6 +55,8 @@ export interface AgentResult {
   tokens: TokenUsage | null;
   /** The model that answered, when the harness says. */
   model: string | null;
+  /** Claude Code only: other models the run called for side work, such as a small model's quick calls. */
+  otherModels?: string[];
   durationMs: number;
 }
 
@@ -67,8 +69,12 @@ export function formatTokens(t: TokenUsage): string {
   return `${n(t.input)} in${t.cachedInput ? ` (${n(t.cachedInput)} cached)` : ""}, ${n(t.output)} out`;
 }
 
-/** Token usage from Claude Code's JSON result. Its input_tokens leaves out cache reads and writes. */
-export function claudeUsage(parsed: any): { tokens: TokenUsage | null; model: string | null } {
+/**
+ * Token usage from Claude Code's JSON result. Its input_tokens leaves out cache reads and writes. Its modelUsage lists
+ * every model the run called, side calls to a small model included, so the model is the one with the most output
+ * tokens (then cost); the rest are `otherModels`, in the same order.
+ */
+export function claudeUsage(parsed: any): { tokens: TokenUsage | null; model: string | null; otherModels: string[] } {
   const u = parsed?.usage;
   const num = (v: unknown) => (typeof v === "number" ? v : 0);
   const tokens = u
@@ -78,8 +84,10 @@ export function claudeUsage(parsed: any): { tokens: TokenUsage | null; model: st
         output: num(u.output_tokens),
       }
     : null;
-  const models = Object.keys(parsed?.modelUsage || {});
-  return { tokens, model: models[0] || null };
+  const byModel = parsed?.modelUsage && typeof parsed.modelUsage === "object" ? Object.entries<any>(parsed.modelUsage) : [];
+  // Array.sort is stable, so models that tie keep Claude Code's order.
+  const models = byModel.sort(([, a], [, b]) => num(b?.outputTokens) - num(a?.outputTokens) || num(b?.costUSD) - num(a?.costUSD)).map(([m]) => m);
+  return { tokens, model: models[0] || null, otherModels: models.slice(1) };
 }
 
 /** Token usage from Codex's JSONL events (codex exec --json): the sum of every turn.completed. */
@@ -332,8 +340,15 @@ async function runClaude(h: HarnessConfig, r: AgentRun): Promise<AgentResult> {
   }
   const output = parsed.structured_output ?? tryJson(parsed.result);
   if (output === undefined) throw new HarnessError("badOutput", "Claude Code didn't return structured output.", tail(String(parsed.result)));
-  const { tokens, model } = claudeUsage(parsed);
-  return { output, costUsd: typeof parsed.total_cost_usd === "number" ? parsed.total_cost_usd : null, tokens, model, durationMs: Date.now() - started };
+  const { tokens, model, otherModels } = claudeUsage(parsed);
+  return {
+    output,
+    costUsd: typeof parsed.total_cost_usd === "number" ? parsed.total_cost_usd : null,
+    tokens,
+    model,
+    ...(otherModels.length ? { otherModels } : {}),
+    durationMs: Date.now() - started,
+  };
 }
 
 async function runCodex(h: HarnessConfig, r: AgentRun): Promise<AgentResult> {

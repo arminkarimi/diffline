@@ -135,7 +135,7 @@ test("run events: per-agent harness, model, tokens, cost, findings and failures"
     agents: [
       { id: "security", harness: "pi", model: "openai/gpt-x", thinking: "high", instructions: "abcdefabcdef", ms: 40_000, tokens: { input: 1000, cachedInput: 400, output: 200 }, costUsd: 0.12, findings: 2 },
       { id: "tests", harness: "codex", model: null, instructions: "123456123456", ms: 3000, tokens: null, costUsd: null, findings: 0, failed: "timeout" },
-      { id: "lede", harness: "claude", model: "claude-sonnet-9", instructions: null, ms: 900, tokens: null, costUsd: 0.01, findings: 0 },
+      { id: "lede", harness: "claude", model: "claude-sonnet-9", otherModels: ["claude-haiku-9"], instructions: null, ms: 900, tokens: null, costUsd: 0.01, findings: 0 },
     ],
   }, new Date(RAN));
   assert.equal(e.kind, "run");
@@ -145,6 +145,8 @@ test("run events: per-agent harness, model, tokens, cost, findings and failures"
   assert.deepEqual(e.agents![0], { id: "security", harness: "pi", model: "openai/gpt-x", thinking: "high", instructions: "abcdefabcdef", ms: 40_000, tokens: { input: 1000, cachedInput: 400, output: 200 }, costUsd: 0.12, findings: 2 });
   assert.equal(e.agents![1].failed, "timeout");
   assert.equal("thinking" in e.agents![1], false, "thinking only for Pi");
+  assert.deepEqual(e.agents![2].otherModels, ["claude-haiku-9"], "side models apart from the model that did the work");
+  assert.equal("otherModels" in e.agents![0], false, "left out when there are none");
 });
 
 test("run events: an automatic run skipped because the pull request is approved", () => {

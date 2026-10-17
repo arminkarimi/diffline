@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **The right model for Claude Code agents.** Claude Code reports every model a run called, including quick side calls to a small model, and Diffline took the first one, so the agent log and review metrics could name Haiku when Sonnet did the review. It now names the model that wrote the most, and lists the others apart: `also …` in the agent log and `otherModels` in the run events.
+- **No unexplained "Partly" in the description check.** When the guide marked a rule covered but its quote wasn't found in the description, the rule turned into a bare "Partly" with nothing saying why. Quotes are now matched against the description as it reads, so dropping Markdown such as links, code marks or bold no longer counts as a mismatch. A covered rule whose quote still isn't there stays covered, with a note to check it yourself.
+
 ## 0.4.2
 
 Setup guidance for new installs, and a tidier sidebar.

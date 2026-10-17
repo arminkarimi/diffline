@@ -224,7 +224,7 @@ All three get a minimal environment (`agentEnv()` in `src/core/exec.ts`): what t
 - Values from fixed sets (severity, confidence, label, change) fall back to a default when they're not in the set, because the page uses several of them in class names.
 - Findings below an agent's minimum confidence, or over its limit, are dropped.
 - Chapters cover every changed file once. Files the guide left out go into a last chapter.
-- Description quotes must appear in the description, and the description check has one item per rule.
+- Description quotes must appear in the description as it reads (`descPlain()`: a link counts as its text, and code, emphasis, heading, list and quote marks, curly quotes and spacing don't matter; the page checks for an edited description the same way), and the description check has one item per rule. A quote that isn't there is dropped. A `covered` item left without a quote stays covered, with a note saying the guide's quote wasn't found (or that it gave none) so the reviewer checks it; it isn't turned into a gap nobody explained.
 - Diagram edges must join real nodes.
 - Findings are sorted by severity, then agent order, and get [ids that survive a re-run](#finding-ids).
 
@@ -408,7 +408,7 @@ Each entry of the agent file's `agents` (`AgentInfo`) records what that agent ra
 | Field | What it holds |
 | --- | --- |
 | `harness` | `claude`, `codex` or `pi`. |
-| `model` | The model the harness reported, else the configured one, else `null`. |
+| `model` | The model the harness reported, else the configured one, else `null`. Claude Code lists every model a run called, small side calls included, so it's the one with the most output tokens, then the highest cost. |
 | `thinking` | Pi only: the thinking level, `null` for Pi's default. Left out for other harnesses. |
 | `instructions` | The first 12 hex digits of a SHA-256 of the agent's focus and instructions (`instructionsHash()`), so a change of instructions shows in the report. |
 
@@ -427,7 +427,7 @@ Every line has `v` (1, the schema version), `at` (when, ISO 8601), `pr` (`owner/
 | `finding` | `added`, `dismissed`, `copied`, `undone`, `posted`, `left-open` | `finding`: `id`, `agent`, `severity`, `confidence`, `label`, `path`, `title`. `agent`: `id`, `harness`, `model`, `thinking` (Pi), `instructions`. `reason`: the dismiss reason, or for `undone` what was undone. `edit` (posted only): how much the text was reworded, 0 (as the agent wrote it) to 1 (rewritten), the word-level edit distance over the longer text's length. |
 | `description` | `asked`, `skipped`, `undone` | `rule`, `descKind` (`feature` or `fix`), `agent` (the guide), `reason`: the skip reason, or for `undone` what was undone. |
 | `review` | `submitted` | `review`: `event` (`approve`, `changes` or `comment`), `own` (the reviewer wrote the pull request), `comments` (inline comments and replies posted), `fromFindings` (of those, drafts from findings), `reviewed` and `hunks` (hunks marked reviewed, of all), `agents` (an agent review existed), `activeMs` (time the page was focused and in use for this pull request since it opened or the last review posted; a minute without input counts as idle), `round` (1 for the first review of the pull request in the log), `newPush` (the head differs from the previous review's). |
-| `run` | `finished`, `failed`, `cancelled` | `trigger` (`auto` or `manual`), `ms`, and `agents`: per agent, including the lede, `id`, `harness`, `model`, `thinking` (Pi), `instructions` (`null` for the lede), `ms`, `tokens` (`input`, `cachedInput`, `output`, or `null`), `costUsd` (`null` when the harness doesn't report it), `findings`, and `failed` (`missing`, `auth`, `timeout`, `cancelled`, `failed` or `badOutput`) when it failed. |
+| `run` | `finished`, `failed`, `cancelled` | `trigger` (`auto` or `manual`), `ms`, and `agents`: per agent, including the lede, `id`, `harness`, `model`, `otherModels` (Claude Code: the other models the run called for side work, left out when there are none), `thinking` (Pi), `instructions` (`null` for the lede), `ms`, `tokens` (`input`, `cachedInput`, `output`, or `null`), `costUsd` (`null` when the harness doesn't report it), `findings`, and `failed` (`missing`, `auth`, `timeout`, `cancelled`, `failed` or `badOutput`) when it failed. |
 | `run` | `skipped` | An automatic run that didn't start: `reason` (`approved`), `trigger` (`auto`), `agents` (empty). `run` is `null`. |
 
 When each is written: `added` when a finding goes into the review (**Add to my review**, or a composer draft from it), `dismissed` with its reason, `copied`, `undone` when a decision is taken back, and, when a review posts, `posted` for each draft from a finding and `left-open` for each finding of the current run still undecided, then one `review` event. Description rules log `asked`, `skipped` and `undone`. `runAgents()` writes a `run` event after every run that got past its checks, however it ends. Scheduling writes a `skipped` run event (`recordSkippedRun()`) once per pull request and head when it holds an automatic run because the pull request is approved.

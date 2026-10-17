@@ -16,6 +16,21 @@ interface Located {
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
+/**
+ * A pull request description as it reads, for checking the guide's quotes, which copy the text rather than its
+ * Markdown: a link counts as its text, and code, emphasis, heading, list and quote marks, curly quotes and spacing don't
+ * matter. descPlain in the page (app.js) is the same, so a quote that passes here isn't shown as out of date there.
+ */
+export const descPlain = (s: string): string =>
+  s
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d+[.)][ \t]+)/gm, "")
+    .replace(/[`*_~]/g, "")
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+
 /** Finds diff lines by text, the way the page resolves `match` (the first line containing the text). */
 export class AnchorIndex {
   private readonly files: Map<string, Array<{ type: string; text: string; hunk: number; line: number }>>;
@@ -181,6 +196,7 @@ export function guideParts(raw: GuideOutput, data: ReviewData, body: string, ind
   const kind = d.kind === "feature" ? "feature" : "fix";
   const rules = settings.descriptionRules[kind];
   const byRule = new Map(d.items.map((it) => [it.rule, it]));
+  const plainBody = descPlain(body);
   const items: DescriptionItem[] = rules.map((rule) => {
     const it = byRule.get(rule);
     if (!it) {
@@ -188,20 +204,29 @@ export function guideParts(raw: GuideOutput, data: ReviewData, body: string, ind
       return { rule, status: "missing", note: "The guide agent didn't assess this rule." };
     }
     const said = oneOf(it.status, ["covered", "partly", "missing", "none"] as const, "missing");
-    let status = said === "none" && rule !== "dependencies" ? "missing" : said;
+    const status = said === "none" && rule !== "dependencies" ? "missing" : said;
     let quote = it.quote && it.quote.trim() ? it.quote.trim() : undefined;
-    if (quote && !body.includes(quote)) {
+    const quoted = !!quote;
+    if (quote && !(descPlain(quote) && plainBody.includes(descPlain(quote)))) {
       problems.repaired.push(`guide: quote for "${rule}" isn't in the description`);
       quote = undefined;
     }
-    // Covered needs a quote from the description to show for it.
-    if (status === "covered" && !quote) status = "partly";
+    // Covered shows the text that covers the rule. Without it the agent's call stands, since nothing says the
+    // description is thin, and the note says the reviewer has to check it.
+    let unchecked = "";
+    if (status === "covered" && !quote) {
+      if (!quoted) problems.repaired.push(`guide: "${rule}" is covered without a quote`);
+      unchecked = quoted
+        ? "The guide agent marked this covered, but the text it quoted isn't in the description, so check it yourself."
+        : "The guide agent marked this covered but didn't quote the description, so check it yourself.";
+    }
+    const note = [unchecked, it.note?.trim() || ""].filter(Boolean).join(" ");
     const refs = refsOf(index, it.refs, problems, `guide description ${rule}`);
     return {
       rule,
       status,
       ...(quote && (status === "covered" || status === "partly") ? { quote } : {}),
-      ...(it.note && it.note.trim() ? { note: it.note.trim() } : {}),
+      ...(note ? { note } : {}),
       ...(it.ask && it.ask.trim() && (status === "partly" || status === "missing") ? { ask: it.ask.trim() } : {}),
       ...(refs.length ? { refs } : {}),
     } as DescriptionItem;

@@ -502,9 +502,18 @@ const DESC_ITEMS = (DESC && DESC_KINDS[DESC.kind] ? DESC.items || [] : [])
   .sort((a, b) => DESC_RULE_ORDER.indexOf(a.rule) - DESC_RULE_ORDER.indexOf(b.rule));
 const descIsGap = (it) => it.status === "partly" || it.status === "missing";
 const DESC_GAPS = DESC_ITEMS.filter(descIsGap);
-const descNorm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+// The description as it reads, the way the extension checked the guide's quotes (descPlain in validate.ts): a link
+// counts as its text, and code, emphasis, heading, list and quote marks, curly quotes and spacing don't matter.
+const descPlain = (s) => String(s || "")
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+  .replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+|\d+[.)][ \t]+)/gm, "")
+  .replace(/[`*_~]/g, "")
+  .replace(/[‘’]/g, "'")
+  .replace(/[“”]/g, '"')
+  .replace(/\s+/g, " ")
+  .trim();
 // A quote the description no longer contains means it was edited after the check ran.
-const DESC_STALE = DESC_ITEMS.some((it) => it.quote && !descNorm(PR.description).includes(descNorm(it.quote)));
+const DESC_STALE = DESC_ITEMS.some((it) => it.quote && !descPlain(PR.description).includes(descPlain(it.quote)));
 
 function defaultReviewed() {
   const seen = new Set(PR.lastReview.files);

@@ -356,3 +356,16 @@ test("review page: when the diff doesn't load, the Changes tab says why and offe
   page.click("next-unreviewed");
   assert.match(page.toasts.at(-1) ?? "", /The changes didn(&#39;|')t load/);
 });
+
+test("review page: a quote that drops the description's Markdown isn't taken for an edited description", () => {
+  const agent = (quote: string) => ({
+    ranAt: ago(0.1), commit: "c".repeat(40), lede: "L", checked: [], findings: [],
+    agents: [{ id: "guide", name: "Guide", short: "Guide", focus: "Guide" }],
+    description: { kind: "fix", why: "w", items: [{ rule: "evidence", status: "covered", quote }] },
+  });
+  const body = "Customers were charged **dollars** instead of `cents`; see [the ticket](https://example.com/t/1).";
+  const same = openPage({ pr: { body }, live: { agent: agent("Customers were charged dollars instead of cents; see the ticket.") } });
+  unlike(same.text(), /changed after the check ran/);
+  const edited = openPage({ pr: { body: "Rewritten since." }, live: { agent: agent("Customers were charged dollars instead of cents; see the ticket.") } });
+  like(edited.text(), /changed after the check ran/);
+});
