@@ -11,6 +11,7 @@ Node 26 runs the source as it is, with no build step. The package isn't publishe
 | `@diffline/core/grouping` | How pull requests are grouped in the list (the sidebar and Home): by relationship (review requested, assigned, you reviewed, code owner, team, yours, watched, opened here, recently merged or closed) or by repository, how each group is sorted, and Others you could review at the bottom. |
 | `@diffline/core/review-status` | Your last review of a pull request and what changed since (new commits, updated on GitHub), approval counts, and how a pull request changed while its page was open. |
 | `@diffline/core/freshness` | Whether the last agent review is current, behind the head, or older than activity on GitHub. |
+| `@diffline/core/files` | Which changed files are generated (lockfiles, minified bundles, snapshots, build output): folded on the review page and left out of the risk score's changed lines. |
 | `@diffline/core/risk` | The 0–100 risk score and its factors. It mirrors `computeRisk` in `packages/review-ui/app.js`; change both together. |
 | `@diffline/core/codeowners` | `CODEOWNERS` parsing and matching, with GitHub's rules. |
 | `@diffline/core/row-text` | The words on a row and in its hover: your review, the state, approvals, the agents' status. |

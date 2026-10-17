@@ -8,6 +8,7 @@ import { runReview, type AgentRunRecord, type Harnesses, type ReviewProgress } f
 import { formatTokens, HarnessError, type TokenUsage } from "../agents/harness.ts";
 import { loadSettings } from "../agents/settings.ts";
 import { ownsAny, parseCodeowners, type OwnerRule } from "@diffline/core/codeowners";
+import { isGenerated } from "@diffline/core/files";
 import { reviewFreshness, type Freshness } from "@diffline/core/freshness";
 import { buildGroups, type RowGroup, type SidebarConfig } from "@diffline/core/grouping";
 import { reviewCounts, sinceReview } from "@diffline/core/review-status";
@@ -113,8 +114,6 @@ export interface PrRecord {
   headSeenAt?: number;
 }
 
-const GENERATED = [/(^|\/)package-lock\.json$/, /(^|\/)npm-shrinkwrap\.json$/, /(^|\/)yarn\.lock$/, /(^|\/)pnpm-lock\.yaml$/, /(^|\/)Cargo\.lock$/, /(^|\/)go\.sum$/, /(^|\/)poetry\.lock$/, /(^|\/)Gemfile\.lock$/, /\.min\.(js|css)$/, /\.snap$/, /(^|\/)dist\//];
-const isGenerated = (p: string) => GENERATED.some((r) => r.test(p));
 const sameKey = (a: PrKey, b: PrKey) => a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase() && a.number === b.number;
 
 /** Why a pull request is too large for an automatic run, or null when it isn't. */

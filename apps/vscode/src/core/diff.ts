@@ -9,6 +9,7 @@ import { realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { GIT_ENV, mapLimit, run, type RunResult } from "./exec.ts";
 import type { Commit, DiffFile, DiffLine, Hunk, NpmDep, RefInfo, ReviewData } from "./types.ts";
+import { isGenerated } from "@diffline/core/files";
 
 /** A git command failed while building the review data. */
 export class ExportError extends Error {
@@ -18,11 +19,6 @@ export class ExportError extends Error {
   }
 }
 
-const GENERATED = [
-  /(^|\/)package-lock\.json$/, /(^|\/)npm-shrinkwrap\.json$/, /(^|\/)yarn\.lock$/, /(^|\/)pnpm-lock\.yaml$/,
-  /(^|\/)Cargo\.lock$/, /(^|\/)go\.sum$/, /(^|\/)poetry\.lock$/, /(^|\/)Gemfile\.lock$/,
-  /\.min\.(js|css)$/, /\.snap$/, /(^|\/)dist\//,
-];
 const LANGS = new Map<string, string>(Object.entries({
   ".ts": "ts", ".tsx": "tsx", ".js": "ts", ".jsx": "tsx", ".mjs": "ts", ".cjs": "ts",
   ".json": "json", ".sql": "sql", ".yml": "yaml", ".yaml": "yaml", ".md": "md", ".sh": "sh", ".rs": "rust",
@@ -473,7 +469,7 @@ export async function buildReviewData(
   });
 
   // Every file read goes through one cat-file process.
-  const generated = files.map((f) => GENERATED.some((re) => re.test(f.path)));
+  const generated = files.map((f) => isGenerated(f.path));
   const specs: string[] = [];
   const contentAt = files.map((f, i) => (f.status !== "deleted" && !f.binary && !generated[i] ? specs.push(`${headSha}:${f.path}`) - 1 : -1));
   const npmAt = files.map((f) => {

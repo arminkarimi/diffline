@@ -45,6 +45,7 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 | `grouping` | The list's groups (the sidebar, and the page's list): by relationship or by repository, the sort, and Others you could review. |
 | `review-status` | The viewer's last review, what changed since (`sinceReview`), approval counts, and how a pull request changed while its page was open (`prChange`). |
 | `freshness` | Whether the last agent review is current, behind, or older than activity on GitHub (`reviewFreshness`). |
+| `files` | Which changed files are generated (lockfiles, minified bundles, snapshots, build output), for the diff and the risk score. |
 | `risk` | The risk score, a port of `computeRisk` in `packages/review-ui/app.js`. |
 | `codeowners` | Parsing `CODEOWNERS` and matching paths with GitHub's rules. |
 | `row-text` | A row's description and hover. |
