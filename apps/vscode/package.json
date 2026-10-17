@@ -229,11 +229,6 @@
           "command": "diffline.sortBy",
           "when": "view == diffline.pullRequests",
           "group": "navigation@4"
-        },
-        {
-          "command": "diffline.showLog",
-          "when": "view == diffline.pullRequests",
-          "group": "navigation@5"
         }
       ],
       "view/item/context": [

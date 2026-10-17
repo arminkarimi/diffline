@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **No log button in the sidebar's title bar.** **Diffline: Show Agent Log** is still in the Command Palette.
+
 ## 0.4.1
 
 A new extension ID for the stores: `diffline.diffline`.
