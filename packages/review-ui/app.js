@@ -125,7 +125,7 @@ function ago(iso) {
   return F_DATE.format(then);
 }
 
-// "5 minutes ago", "3 hours ago", "2 days ago": as the sidebar's hover says it (time.ts timeAgo in the extension).
+// "5 minutes ago", "3 hours ago", "2 days ago": as the sidebar's hover says it (timeAgo in packages/core/src/time.ts).
 function timeAgo(iso) {
   const t = iso ? Date.parse(iso) : NaN;
   if (!Number.isFinite(t)) return "earlier";
@@ -137,7 +137,7 @@ function timeAgo(iso) {
   return `${plural(Math.round(hours / 24), "day")} ago`;
 }
 
-// "just now", "5m ago", "5h ago", "2d ago": short, for list rows, as the sidebar's rows say it (row-text.ts shortAgo).
+// "just now", "5m ago", "5h ago", "2d ago": short, for list rows, as the sidebar's rows say it (shortAgo in packages/core/src/row-text.ts).
 function shortAgo(iso) {
   const t = iso ? Date.parse(iso) : NaN;
   if (!Number.isFinite(t)) return "";
@@ -1117,7 +1117,7 @@ function liveStages() {
 const stages = () => liveStages();
 
 // Approvals and change requests among each reviewer's latest approval or change request (dismissed ones don't count),
-// as the extension counts them for the list (review-status.ts reviewCounts).
+// as the extension counts them for the list (reviewCounts in packages/core/src/review-status.ts).
 const countReviews = (latest) => ({
   approvals: (latest || []).filter((r) => r.state === "APPROVED").length,
   changesRequested: (latest || []).filter((r) => r.state === "CHANGES_REQUESTED").length,

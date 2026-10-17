@@ -1,7 +1,7 @@
 // The reviewer's own review of a pull request, what changed since, and how the pull request changed while its page was
-// open. Pure, shared by the list (github.ts), the page's rows (service.ts), the sidebar (row-text.ts) and the panel.
+// open. Shared by the list, the page's rows, the sidebar (row-text.ts) and the review panel.
 
-import type { PullRequestSummary, ViewerLastReview } from "./types.ts";
+import type { PullRequestInput, ViewerLastReview } from "./types.ts";
 
 const REVIEW_STATES = new Set(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]);
 
@@ -77,7 +77,7 @@ export interface PrChange {
  * The change between what the page shows and the list's latest summary, or null when nothing changed. Every change
  * moves GitHub's updatedAt forward, so a summary not newer than the page (fetched before it) never counts.
  */
-export function prChange(shown: PrSnapshot | null | undefined, now: Pick<PullRequestSummary, "state" | "headRefOid" | "updatedAt"> | null | undefined): PrChange | null {
+export function prChange(shown: PrSnapshot | null | undefined, now: Pick<PullRequestInput, "state" | "headRefOid" | "updatedAt"> | null | undefined): PrChange | null {
   if (!shown || !now) return null;
   const shownAt = shown.updatedAt ? Date.parse(shown.updatedAt) : NaN;
   const nowAt = now.updatedAt ? Date.parse(now.updatedAt) : NaN;

@@ -1,4 +1,5 @@
 // A line-for-line port of computeRisk in packages/review-ui/app.js, so the sidebar shows the same score as the page.
+// Change both together; test/risk.test.ts checks they agree.
 
 import type { Risk, RiskInput } from "./types.ts";
 

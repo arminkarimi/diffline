@@ -40,6 +40,7 @@ This is a monorepo with npm workspaces.
 | Path | What it is |
 | --- | --- |
 | `apps/vscode/` | The VS Code extension: the sidebar, GitHub access through `gh`, the agents, the review panel. Its [README](apps/vscode/README.md) is what users read. |
+| `packages/core/` | The product rules: how pull requests are grouped and worded in the list, review status, the risk score, `CODEOWNERS` matching. Pure TypeScript functions; the extension bundles them. |
 | `packages/review-ui/` | The review page the extension shows in a webview. Plain HTML, CSS and JavaScript, no build step. |
 | `docs/` | [Features](docs/features.md) and [architecture](docs/architecture.md). |
 

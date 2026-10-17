@@ -7,19 +7,21 @@ import path from "node:path";
 import { runReview, type AgentRunRecord, type Harnesses, type ReviewProgress } from "../agents/review.ts";
 import { formatTokens, HarnessError, type TokenUsage } from "../agents/harness.ts";
 import { loadSettings } from "../agents/settings.ts";
+import { ownsAny, parseCodeowners, type OwnerRule } from "@diffline/core/codeowners";
+import { reviewFreshness, type Freshness } from "@diffline/core/freshness";
+import { buildGroups, type RowGroup, type SidebarConfig } from "@diffline/core/grouping";
+import { reviewCounts, sinceReview } from "@diffline/core/review-status";
+import { computeRisk } from "@diffline/core/risk";
+import type { RunState } from "@diffline/core/types";
 import type { AgentId, AgentFile, ListItem, LiveData, PrKey, PullRequestDetail, PullRequestSummary, PushPayload, ReviewData, Risk, RiskInput, ViewerLastReview } from "./types.ts";
 import { decided, prKeyString, prSlug } from "./types.ts";
 export { decided } from "./types.ts";
 import { buildReviewData } from "./diff.ts";
-import { ownsAny, parseCodeowners, type OwnerRule } from "./codeowners.ts";
 import { findSecrets } from "./secrets.ts";
-import { buildGroups, type RowGroup, type SidebarConfig } from "./grouping.ts";
 import { countChecks, fetchCodeowners, fetchPullRequest, fetchPullRequestFiles, fetchViewerTeams, GhError, pushReview, searchPullRequests, searchReviewable } from "./github.ts";
 import { Semaphore } from "./limit.ts";
-import { reviewCounts, sinceReview } from "./review-status.ts";
 import { Locks } from "./locks.ts";
 import type { Repos } from "./repos.ts";
-import { computeRisk } from "./risk.ts";
 import type { Store } from "./store.ts";
 import { MetricsLog, type MetricsEvent, type PageMetrics } from "./metrics-log.ts";
 import { reviewMarkdown, type ReviewMarkdown } from "./review-markdown.ts";
@@ -74,10 +76,6 @@ export interface Memory {
 /** Approved pull requests: "ask" holds automatic runs and asks, "skip" holds them, "run" runs them as any other. */
 export type ApprovedPolicy = "ask" | "skip" | "run";
 
-// "elsewhere": another VS Code window is running this pull request's agents. "held": an automatic run waits for you
-// (too large, or approved).
-export type RunState = "idle" | "waiting" | "queued" | "running" | "elsewhere" | "held" | "done" | "failed" | "cancelled";
-
 export interface RunStatus {
   state: RunState;
   head?: string;
@@ -100,6 +98,7 @@ export interface RunStatus {
   stopOffered?: boolean;
 }
 
+/** A pull request in the list. The core's grouping and row text take it as it is (a PullRequestEntry in @diffline/core). */
 export interface PrRecord {
   key: PrKey;
   summary: PullRequestSummary | null;
@@ -117,30 +116,6 @@ export interface PrRecord {
 const GENERATED = [/(^|\/)package-lock\.json$/, /(^|\/)npm-shrinkwrap\.json$/, /(^|\/)yarn\.lock$/, /(^|\/)pnpm-lock\.yaml$/, /(^|\/)Cargo\.lock$/, /(^|\/)go\.sum$/, /(^|\/)poetry\.lock$/, /(^|\/)Gemfile\.lock$/, /\.min\.(js|css)$/, /\.snap$/, /(^|\/)dist\//];
 const isGenerated = (p: string) => GENERATED.some((r) => r.test(p));
 const sameKey = (a: PrKey, b: PrKey) => a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase() && a.number === b.number;
-/**
- * How the last agent review relates to the pull request now. "current": it reviewed the head commit. "behind": commits
- * landed since. `activity`: the pull request changed on GitHub after the review (description, comments, reviews,
- * labels), which can change what the agents would say even on the same commit.
- */
-export interface Freshness {
-  state: "none" | "current" | "behind";
-  commit?: string;
-  ranAt?: string;
-  activity: boolean;
-}
-
-/** GitHub's updatedAt can trail the run by a few seconds without anything new; ignore that much. */
-const ACTIVITY_SLACK_MS = 60_000;
-
-export function reviewFreshness(agent: PrRecord["agent"], summary: Pick<PullRequestSummary, "headRefOid" | "updatedAt"> | null): Freshness {
-  if (!agent) return { state: "none", activity: false };
-  const base = { commit: agent.commit, ranAt: agent.ranAt };
-  if (!summary) return { state: "current", ...base, activity: false };
-  if (summary.headRefOid !== agent.commit) return { state: "behind", ...base, activity: true };
-  const ran = Date.parse(agent.ranAt);
-  const updated = Date.parse(summary.updatedAt);
-  return { state: "current", ...base, activity: Number.isFinite(ran) && Number.isFinite(updated) && updated > ran + ACTIVITY_SLACK_MS };
-}
 
 /** Why a pull request is too large for an automatic run, or null when it isn't. */
 export function tooLargeToAutoRun(

@@ -1,0 +1,26 @@
+{
+  "name": "@diffline/core",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Diffline's product rules: how pull requests are grouped and worded in the list, review status, the risk score and CODEOWNERS matching. Pure TypeScript functions, run by Node without a build step.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./codeowners": "./src/codeowners.ts",
+    "./freshness": "./src/freshness.ts",
+    "./grouping": "./src/grouping.ts",
+    "./review-status": "./src/review-status.ts",
+    "./risk": "./src/risk.ts",
+    "./row-text": "./src/row-text.ts",
+    "./time": "./src/time.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec test/*.test.ts",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  }
+}

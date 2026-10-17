@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ownersOf, ownsAny, parseCodeowners } from "../src/core/codeowners.ts";
+import { ownersOf, ownsAny, parseCodeowners } from "../src/codeowners.ts";
 
 // GitHub's documented examples, trimmed.
 const FILE = `

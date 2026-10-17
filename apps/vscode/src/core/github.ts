@@ -2,9 +2,9 @@
 // with one GraphQL query, normalizes them into the shapes the page (packages/review-ui/app.js)
 // reads, parses git remotes, and posts reviews. Field names and order are part of that contract.
 
-import { CODEOWNERS_PATHS } from "./codeowners.ts";
+import { CODEOWNERS_PATHS } from "@diffline/core/codeowners";
 import { run, type RunResult } from "./exec.ts";
-import { reviewCounts, sinceReview, viewerLastReviewFrom } from "./review-status.ts";
+import { reviewCounts, sinceReview, viewerLastReviewFrom } from "@diffline/core/review-status";
 import { prKeyString } from "./types.ts";
 import type {
   Check,

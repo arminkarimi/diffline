@@ -1,5 +1,12 @@
 // Shapes shared by the extension host and the Diffline page (packages/review-ui/app.js).
 // The page reads ReviewData as window.REVIEW_DATA and LiveData as window.DIFFLINE_LIVE.
+// The product rules in @diffline/core read their own input shapes (packages/core/src/types.ts). Shapes that are exactly
+// one of those (PrKey, ViewerLastReview, Risk, RiskInput) come from there. Richer ones, such as PullRequestSummary and
+// PrRecord in service.ts, are passed to the rules as they are, so they must stay assignable to the core's inputs.
+
+import type { ListReason, PrKey, Risk, RiskInput, ViewerLastReview } from "@diffline/core/types";
+
+export type { PrKey, Risk, RiskInput, ViewerLastReview };
 
 /* ---------- Review data: the diff, built from local git ---------- */
 
@@ -151,15 +158,6 @@ export interface PullRequestDetail {
   threads: Thread[];
 }
 
-/** The viewer's latest submitted review of a pull request (a reply to a review thread is a COMMENTED review). */
-export interface ViewerLastReview {
-  state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED";
-  /** submittedAt */
-  at: string;
-  /** The commit the review was on; null when GitHub doesn't say. */
-  commit: string | null;
-}
-
 /** A pull request in the list: cheap to fetch for many at once (one GraphQL search). */
 export interface PullRequestSummary {
   repo: string; // owner/name
@@ -195,7 +193,7 @@ export interface PullRequestSummary {
    * recently closed); team requests, watched repositories and others leave it out to keep those searches fast.
    */
   viewerLastReview?: ViewerLastReview | null;
-  /** What changed since viewerLastReview (review-status.ts sinceReview). Missing when there's no review to compare. */
+  /** What changed since viewerLastReview (sinceReview in @diffline/core/review-status). Missing when there's no review to compare. */
   sinceReview?: { newCommits: boolean; updated: boolean };
   /** Approvals and change requests among reviewers' latest opinionated reviews; the list has no reviewDecision. */
   reviewCounts?: { approvals: number; changesRequested: number };
@@ -207,7 +205,7 @@ export interface PullRequestSummary {
    * not yours, and you've reviewed it (GitHub drops you from the requested reviewers once you do). "recently-closed":
    * merged or closed in the last diffline.watch.recentlyClosedDays days, and you reviewed it or wrote it.
    */
-  reasons: Array<"review-requested" | "team-requested" | "assigned" | "reviewed" | "code-owner" | "authored" | "watched" | "pinned" | "recently-closed" | "other">;
+  reasons: ListReason[];
 }
 
 /* ---------- Agent review: agents/<owner>__<repo>__<pr>.json in the extension's storage (store.ts) ---------- */
@@ -416,21 +414,6 @@ export interface LiveData {
   runNote?: string;
 }
 
-/* ---------- Risk (computeRisk in app.js) ---------- */
-
-export interface RiskInput {
-  files: Array<{ path: string; additions: number; deletions: number; generated?: boolean; tests?: { path: string; changed: boolean } | null }>;
-  findings: Array<{ severity: string; state: string }>;
-  checks: { total: number; failed: number; running: number };
-}
-
-export interface Risk {
-  score: number;
-  level: "low" | "medium" | "high";
-  factors: Array<{ id: string; label: string; detail: string; p: number; points: number; files?: string[] }>;
-  lines: number;
-}
-
 /* ---------- Posting a review ---------- */
 
 export interface PushPayload {
@@ -454,12 +437,6 @@ export type PushResult =
   | { dry: false; results: Array<{ kind: PushStep["kind"]; ok: boolean; url?: string; error?: string }> };
 
 /* ---------- Identity ---------- */
-
-export interface PrKey {
-  owner: string;
-  name: string;
-  number: number;
-}
 
 export const prKeyString = (k: PrKey): string => `${k.owner}/${k.name}#${k.number}`;
 export const prSlug = (k: PrKey): string => `${k.owner}__${k.name}__${k.number}`;

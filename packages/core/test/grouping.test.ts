@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { compareRows, isOther, relationshipOf } from "../src/core/grouping.ts";
-import type { PrRecord } from "../src/core/service.ts";
+import { compareRows, isOther, relationshipOf } from "../src/grouping.ts";
+import type { PullRequestEntry } from "../src/types.ts";
 
-const rec = (reasons: string[], extra: Partial<{ createdAt: string; updatedAt: string; pinned: boolean }> = {}): PrRecord =>
+const rec = (reasons: string[], extra: Partial<{ createdAt: string; updatedAt: string; pinned: boolean }> = {}): PullRequestEntry =>
   ({
     key: { owner: "o", name: "r", number: 1 },
     pinned: !!extra.pinned,
     agent: null,
     run: { state: "idle" },
     summary: { reasons, createdAt: extra.createdAt || "2026-10-01T00:00:00Z", updatedAt: extra.updatedAt || "2026-10-01T00:00:00Z" },
-  }) as unknown as PrRecord;
+  }) as unknown as PullRequestEntry;
 
 test("relationshipOf: the most specific group wins", () => {
   assert.equal(relationshipOf(rec(["team-requested", "review-requested"]))?.id, "requested");
@@ -41,7 +41,7 @@ test("compareRows: risk, newest created, recently updated", () => {
 });
 
 test("buildGroups: relationship groups in order, totals, folded team requests, top others at the bottom", async () => {
-  const { buildGroups } = await import("../src/core/grouping.ts");
+  const { buildGroups } = await import("../src/grouping.ts");
   const row = (n: number, reasons: string[], score: number, repo = "r") => {
     const record = rec(reasons);
     (record as any).key = { owner: "o", name: repo, number: n };
@@ -67,7 +67,7 @@ test("buildGroups: relationship groups in order, totals, folded team requests, t
 });
 
 test("buildGroups: by repository, each row tagged with why it's listed; others stay at the bottom", async () => {
-  const { buildGroups } = await import("../src/core/grouping.ts");
+  const { buildGroups } = await import("../src/grouping.ts");
   const row = (n: number, reasons: string[], repo: string) => {
     const record = rec(reasons);
     (record as any).key = { owner: "o", name: repo, number: n };
@@ -83,7 +83,7 @@ test("buildGroups: by repository, each row tagged with why it's listed; others s
 });
 
 test("buildGroups: merged and closed pull requests go last, in Recently merged or closed, newest update first", async () => {
-  const { buildGroups } = await import("../src/core/grouping.ts");
+  const { buildGroups } = await import("../src/grouping.ts");
   const row = (n: number, reasons: string[], state: string, updatedAt: string, pinned = false) => {
     const record = rec(reasons, { updatedAt, pinned });
     (record as any).key = { owner: "o", name: "r", number: n };

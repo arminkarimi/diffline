@@ -11,10 +11,10 @@ import { approverWords, DifflineService, parseKey, RECENTLY_CLOSED_DAYS, type Ap
 import { Store } from "./core/store.ts";
 import type { AgentFailure } from "./agents/review.ts";
 import type { AgentFile, AgentId, PrKey } from "./core/types.ts";
-import { timeAgo } from "./core/time.ts";
+import { timeAgo } from "@diffline/core/time";
 import { prKeyString } from "./core/types.ts";
 import { exportAgentReview, ReviewPanel } from "./vscode/panel.ts";
-import { SORT_WORDS, type SidebarConfig } from "./core/grouping.ts";
+import { SORT_WORDS, type SidebarConfig } from "@diffline/core/grouping";
 import { PullRequestTree, type Node } from "./vscode/tree.ts";
 
 function readSidebar(): SidebarConfig {

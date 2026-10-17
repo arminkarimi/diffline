@@ -1,6 +1,6 @@
 # Architecture
 
-How the VS Code extension works. Paths are relative to `apps/vscode/` unless they start with `packages/`.
+How the VS Code extension works. Paths are relative to `apps/vscode/` unless they start with `packages/`. Modules named `@diffline/core/…` are in `packages/core/src/` (see [Product rules](#product-rules)).
 
 ```
  VS Code                      Extension host (Node)                          Outside
@@ -15,6 +15,10 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
                              │   ├─ MetricsLog (core/metrics-log.ts)─┼───► metrics/events.jsonl
                              │   ├─ metrics report (core/metrics.ts) │     (global storage)
                              │   └─ runReview (agents/review.ts) ────┼───► claude / codex / pi
+                             │                                       │
+                             │ @diffline/core (packages/core): the   │
+                             │   product rules the service, sidebar  │
+                             │   and panel call; pure functions      │
                              └───────────────────────────────────────┘
 ```
 
@@ -23,13 +27,32 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 | Folder | What's in it |
 | --- | --- |
 | `src/extension.ts` | Activation: wires the pieces together, registers commands, reads settings. |
-| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping, review metrics, the agent review export, the setup check. Testable with plain Node. |
+| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, review metrics, the agent review export, the setup check. Testable with plain Node. |
 | `src/agents/` | Agent settings, prompts, output schemas, the harnesses, running a review, and validating its output. |
 | `src/vscode/` | The VS Code surfaces: the review panel, the page builder, the sidebar tree. |
 | `test/` | Unit tests (`node --test`). `fake-vscode.ts` stands in for the `vscode` module. |
 | `test-vscode/` | Code that runs inside a real VS Code: the smoke test (`smoke.cjs`, see [CONTRIBUTING.md](../CONTRIBUTING.md)) and the open timing (`open-timing.cjs`, see [Timing an open](#timing-an-open)). |
 | `scripts/` | Developer scripts: GitHub smoke checks, an end-to-end agent run, the page in a browser, the VS Code smoke test, timing an open. |
-| `esbuild.mjs` | Bundles `src/extension.ts` to `dist/extension.cjs` and copies `packages/review-ui` into `media/ui`. |
+| `esbuild.mjs` | Bundles `src/extension.ts`, with the `@diffline/core` modules it imports, to `dist/extension.cjs`, and copies `packages/review-ui` into `media/ui`. |
+| `packages/core/` | The product rules: grouping, review status, risk, `CODEOWNERS`, row wording, relative times. See [Product rules](#product-rules). |
+
+## Product rules
+
+`packages/core` holds the rules that decide what the extension shows, as pure functions with tests of their own:
+
+| Module | What it decides |
+| --- | --- |
+| `grouping` | The list's groups (the sidebar, and the page's list): by relationship or by repository, the sort, and Others you could review. |
+| `review-status` | The viewer's last review, what changed since (`sinceReview`), approval counts, and how a pull request changed while its page was open (`prChange`). |
+| `freshness` | Whether the last agent review is current, behind, or older than activity on GitHub (`reviewFreshness`). |
+| `risk` | The risk score, a port of `computeRisk` in `packages/review-ui/app.js`. |
+| `codeowners` | Parsing `CODEOWNERS` and matching paths with GitHub's rules. |
+| `row-text` | A row's description and hover. |
+| `time` | Relative times. |
+
+The rule for what goes there: pure functions over the core's own input types (`packages/core/src/types.ts`), with no GitHub client, storage, UI or editor APIs. The inputs are the smallest shapes the rules read, and each consumer maps its own data into them. The extension doesn't need to map anything: `PrKey`, `ViewerLastReview`, `Risk` and `RiskInput` in `src/core/types.ts` are the core's types, and the richer `PullRequestSummary` and `PrRecord` are passed as they are, so `npm run typecheck` fails if they stop fitting the core's `PullRequestInput` and `PullRequestEntry`. What touches the service's state, such as `DifflineService.riskInput()` or `freshness()`, stays in the extension and calls the core.
+
+The extension depends on `"@diffline/core": "*"`, which npm links to the workspace (`node_modules/@diffline/core` → `packages/core`). The package's `exports` map each subpath (`@diffline/core/grouping`) to its `.ts` file. Node follows the link to the real path, so it strips the types as it does for the extension's own files (it refuses to for files under `node_modules`); TypeScript checks the core's files as part of the extension's program; esbuild bundles them into `dist/extension.cjs`. Nothing from `packages/core` goes into the `.vsix` but the bundle.
 
 ## Activation
 
@@ -54,7 +77,7 @@ Settings changes go to `service.configChanged()`. Changes to the agents or clone
 
 Every `diffline.watch.pollSeconds` (60 by default, at least 15), `refresh()` runs one GraphQL search through `gh` (`searchPullRequests` in `src/core/github.ts`). It covers review requests to you by name, assignments, pull requests you reviewed, your own, watched repositories, and ones you opened by hand. Concurrent refreshes share one request. The list shows as soon as it answers, and `refresh()` resolves then: the other parts of the list run on their own schedule (below). The last list and its group counts are saved in `globalState`, so they show at once on the next start, background groups included.
 
-Each pull request comes back as a summary (`SUMMARY_FRAGMENT`): state, draft, dates (`updatedAt`, `mergedAt`, `closedAt`), head, mergeability, requested reviewers, check counts, and `latestOpinionatedReviews` (each reviewer's latest approval or change request), from which the summary takes `viewerReview` and the approval counts. GitHub stops a query at about 10 seconds, so the list leaves out what's slow to compute: `reviewDecision` isn't fetched, and the viewer's latest review of any state, with its time and commit, is fetched only in the searches the viewer is involved in (review requested, assigned, reviewed, authored, opened by hand, recently closed), through a second fragment, `DifflineMine`, that adds `latestReviews`. Team requests and watched repositories are the large searches, so they stay on the plain fragment: measured on 50 pull requests, `latestReviews` added about 0.6 to 2 seconds to a search. From the viewer's review, `sinceReview()` in `src/core/review-status.ts` derives `newCommits` (the head isn't the commit reviewed) and `updated` (`updatedAt` more than a minute after the review: comments, reviews or the description changed). Where the review isn't fetched, `viewerLastReview` is missing and rows fall back to `viewerReview`.
+Each pull request comes back as a summary (`SUMMARY_FRAGMENT`): state, draft, dates (`updatedAt`, `mergedAt`, `closedAt`), head, mergeability, requested reviewers, check counts, and `latestOpinionatedReviews` (each reviewer's latest approval or change request), from which the summary takes `viewerReview` and the approval counts. GitHub stops a query at about 10 seconds, so the list leaves out what's slow to compute: `reviewDecision` isn't fetched, and the viewer's latest review of any state, with its time and commit, is fetched only in the searches the viewer is involved in (review requested, assigned, reviewed, authored, opened by hand, recently closed), through a second fragment, `DifflineMine`, that adds `latestReviews`. Team requests and watched repositories are the large searches, so they stay on the plain fragment: measured on 50 pull requests, `latestReviews` added about 0.6 to 2 seconds to a search. From the viewer's review, `sinceReview()` in `@diffline/core/review-status` derives `newCommits` (the head isn't the commit reviewed) and `updated` (`updatedAt` more than a minute after the review: comments, reviews or the description changed). Where the review isn't fetched, `viewerLastReview` is missing and rows fall back to `viewerReview`.
 
 **Recently merged or closed.** With `diffline.watch.recentlyClosedDays` above 0 (3 by default), `searchClosed()` runs two more searches, up to 20 pull requests each: closed ones you reviewed and, with `diffline.watch.authored`, ones you wrote, closed within those days. They go as a request of their own (`refreshClosed()`), because inside the main search they made it about twice as slow, and the list doesn't wait for it. It's sent after the main search's list shows at start, then every 10 minutes, and right away when a pull request leaves the main search. Such a pull request may have just merged, so it keeps its row until the closed search says whether it merged or closed; then it moves under **Recently merged or closed** or goes. When the search answers, `applyClosed()` merges its rows into the list and the list changes; one the main search also found (pinned, say) keeps both reasons. A failed closed search keeps the last ones found. Their rows go in the last group, **Recently merged or closed**, and their changed files aren't fetched.
 
@@ -74,7 +97,7 @@ While a background search hasn't answered, its rows and group counts (`totals`, 
 After every main search and every load of team requests and others, `followUp()` fills in what open rows need, one pass at a time:
 
 - **Changed files** for open rows the search returned without them, 20 pull requests per query, cached by head commit. The risk score needs them.
-- **Code owners** (`markCodeOwned`): your teams and each repository's `CODEOWNERS` (from the default branch, in GitHub's three locations), both cached for an hour. `src/core/codeowners.ts` matches paths with GitHub's rules: the last matching line wins.
+- **Code owners** (`markCodeOwned`): your teams and each repository's `CODEOWNERS` (from the default branch, in GitHub's three locations), both cached for an hour. `@diffline/core/codeowners` matches paths with GitHub's rules: the last matching line wins.
 
 After a refresh, `warmUp()` builds the diffs of up to 10 pull requests that request your review or were opened by hand, so opening them is quick.
 
@@ -240,11 +263,11 @@ The extension answers `api`, `metricsReport`, `metricsExport` and `agentMarkdown
 
 ### Changes while a page is open
 
-The page isn't rebuilt when GitHub changes, so the reader keeps their place. After each main search and each background search, the service emits `pullRequestChanged` for every row whose state, head or `updatedAt` moved. `extension.ts` passes it to `ReviewPanel.noticeChange()`, which compares the list's summary with what the page on screen was built from (`prChange()` in `src/core/review-status.ts`; a summary not newer than the page never counts) and posts `{ type: "host-pr-changed", key, change }` once per distinct change. `change.kind` is the most important one: `merged`, `closed`, `reopened`, `commits` or `updated`. The page shows one notice bar with **Refresh**, which saves, sends `POST /refresh` and reloads. A notice that the pull request was merged or closed also makes **Post now** ask first. A pull request that leaves every search (merged, and neither reviewed nor written by the viewer) loses its row, so no notice comes for it.
+The page isn't rebuilt when GitHub changes, so the reader keeps their place. After each main search and each background search, the service emits `pullRequestChanged` for every row whose state, head or `updatedAt` moved. `extension.ts` passes it to `ReviewPanel.noticeChange()`, which compares the list's summary with what the page on screen was built from (`prChange()` in `@diffline/core/review-status`; a summary not newer than the page never counts) and posts `{ type: "host-pr-changed", key, change }` once per distinct change. `change.kind` is the most important one: `merged`, `closed`, `reopened`, `commits` or `updated`. The page shows one notice bar with **Refresh**, which saves, sends `POST /refresh` and reloads. A notice that the pull request was merged or closed also makes **Post now** ask first. A pull request that leaves every search (merged, and neither reviewed nor written by the viewer) loses its row, so no notice comes for it.
 
 ### Sidebar
 
-`src/vscode/tree.ts` draws the sidebar from the service's records. `src/core/grouping.ts` groups and sorts them, and the page's list uses the same groups. Merged and closed pull requests go in **Recently merged or closed**, last, when grouped by relationship, and stay in their repository when grouped by repository. `src/core/row-text.ts` writes a row's description and hover: your review and what changed since, the state, approvals, and the agents' status, said as since the agents ran. `src/core/risk.ts` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together.
+`src/vscode/tree.ts` draws the sidebar from the service's records. `@diffline/core/grouping` groups and sorts them, and the page's list uses the same groups. Merged and closed pull requests go in **Recently merged or closed**, last, when grouped by relationship, and stay in their repository when grouped by repository. `@diffline/core/row-text` writes a row's description and hover: your review and what changed since, the state, approvals, and the agents' status, said as since the agents ran. `@diffline/core/risk` is a port of `computeRisk` in `packages/review-ui/app.js`, so the sidebar shows the same score as the page. Change both together; `packages/core/test/risk.test.ts` checks they agree.
 
 A row's context value is `pr.<state>` (`idle`, `running` or `elsewhere`), then `.agent` when the pull request has an agent review and `.pinned` when it was opened by hand. `package.json` shows the row's menu entries by matching it.
 

@@ -1,21 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { agentLines, agentStatus, approvalsLine, reviewDescription, rowDescription, shortAgo, stateLine, stateWords, yourReviewLines } from "../src/core/row-text.ts";
-import type { PrRecord } from "../src/core/service.ts";
-import type { PullRequestSummary } from "../src/core/types.ts";
+import { agentLines, agentStatus, approvalsLine, reviewDescription, rowDescription, shortAgo, stateLine, stateWords, yourReviewLines } from "../src/row-text.ts";
+import type { PullRequestEntry, PullRequestInput } from "../src/types.ts";
 
 const NOW = Date.parse("2026-10-13T12:00:00Z");
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
 
-function summary(over: Partial<PullRequestSummary> = {}): PullRequestSummary {
+function summary(over: Partial<PullRequestInput> = {}): PullRequestInput {
   return {
-    repo: "acme/web",
-    number: 123,
-    title: "Add risk scoring",
-    url: "https://github.com/acme/web/pull/123",
-    author: { login: "lee", name: null },
     createdAt: "2026-10-01T00:00:00Z",
     updatedAt: "2026-10-12T00:00:00Z",
     state: "OPEN",
@@ -23,15 +17,8 @@ function summary(over: Partial<PullRequestSummary> = {}): PullRequestSummary {
     mergedAt: null,
     closedAt: null,
     baseRefName: "main",
-    headRefName: "lee/risk",
     headRefOid: HEAD,
-    reviewDecision: null,
     mergeStateStatus: null,
-    additions: 10,
-    deletions: 2,
-    changedFiles: 1,
-    files: [],
-    checks: { total: 0, failed: 0, running: 0 },
     requested: false,
     own: false,
     viewerReview: null,
@@ -49,7 +36,7 @@ const reviewed = (state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMI
   ...(since ? { sinceReview: since } : {}),
 });
 
-const record = (s: PullRequestSummary | null, over: Partial<PrRecord> = {}): PrRecord => ({
+const record = (s: PullRequestInput | null, over: Partial<PullRequestEntry> = {}): PullRequestEntry => ({
   key: { owner: "acme", name: "web", number: 123 },
   summary: s,
   pinned: false,
@@ -67,7 +54,7 @@ test("shortAgo", () => {
 });
 
 test("reviewDescription: your review with its age and what changed since; nothing when you haven't reviewed", () => {
-  const d = (over: Partial<PullRequestSummary>) => reviewDescription(summary(over), NOW);
+  const d = (over: Partial<PullRequestInput>) => reviewDescription(summary(over), NOW);
   assert.equal(d(reviewed("APPROVED", "2026-10-11T12:00:00Z", OLD, { newCommits: true, updated: true })), "you approved 2d ago · new commits");
   assert.equal(d(reviewed("COMMENTED", "2026-10-13T07:00:00Z", HEAD, { newCommits: false, updated: true })), "you commented 5h ago · updated since");
   assert.equal(d(reviewed("CHANGES_REQUESTED", "2026-10-12T12:00:00Z", HEAD, { newCommits: false, updated: false })), "you requested changes 1d ago");
@@ -97,11 +84,11 @@ test("approvalsLine: counts without reviewDecision", () => {
   assert.equal(approvalsLine(summary({ reviewCounts: { approvals: 1, changesRequested: 0 } })), "1 approval");
   assert.equal(approvalsLine(summary()), "No approvals yet");
   // Lists saved by older versions have latestReviews only.
-  assert.equal(approvalsLine(summary({ reviewCounts: undefined, latestReviews: [{ login: "lee", state: "APPROVED" }] })), "1 approval");
+  assert.equal(approvalsLine(summary({ reviewCounts: undefined, latestReviews: [{ state: "APPROVED" }] })), "1 approval");
 });
 
 test("yourReviewLines: state, date, commit and what changed since; re-requested; never reviewed", () => {
-  const lines = (over: Partial<PullRequestSummary>) => yourReviewLines(summary(over), NOW);
+  const lines = (over: Partial<PullRequestInput>) => yourReviewLines(summary(over), NOW);
   assert.deepEqual(lines(reviewed("APPROVED", "2026-10-11T12:00:00Z", OLD, { newCommits: true, updated: true })), ["Your review: approved 2 days ago at bbbbbbb · since then: new commits"]);
   assert.deepEqual(lines(reviewed("COMMENTED", "2026-10-13T07:00:00Z", HEAD, { newCommits: false, updated: true })), ["Your review: commented 5 hours ago at aaaaaaa · since then: updated on GitHub"]);
   assert.deepEqual(lines(reviewed("CHANGES_REQUESTED", "2026-10-13T07:00:00Z", null, { newCommits: false, updated: false })), ["Your review: requested changes 5 hours ago · nothing new since"]);

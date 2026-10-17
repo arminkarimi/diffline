@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import * as vscode from "vscode";
 
-import { prChange, type PrSnapshot } from "../core/review-status.ts";
+import { prChange, type PrSnapshot } from "@diffline/core/review-status";
 import { parseKey, type DifflineService } from "../core/service.ts";
 import type { PrKey, ReviewData } from "../core/types.ts";
 import { prKeyString } from "../core/types.ts";

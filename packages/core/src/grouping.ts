@@ -1,6 +1,6 @@
-// How the sidebar groups and orders pull requests, kept apart from VS Code so it can be tested.
+// How the pull request list (the sidebar, and the page's list) groups and orders pull requests.
 
-import type { PrRecord } from "./service.ts";
+import type { GroupEntry, ListReason as Reason } from "./types.ts";
 
 export type GroupBy = "relationship" | "repository";
 export type SortBy = "risk" | "created" | "updated";
@@ -10,8 +10,6 @@ export interface SidebarConfig {
   /** How many pull requests you could review to show at the bottom. */
   othersLimit: number;
 }
-
-type Reason = NonNullable<PrRecord["summary"]>["reasons"][number];
 
 /** Relationship groups, most specific first: a pull request goes in the first one it fits. */
 const RELATIONSHIP: Array<{ id: string; label: string; reason: Reason; search?: string }> = [
@@ -32,7 +30,7 @@ const RELATIONSHIP: Array<{ id: string; label: string; reason: Reason; search?: 
 const CLOSED = { id: "closed", label: "Recently merged or closed", reason: "recently-closed" as Reason, search: "closed" };
 
 /** Merged or closed on GitHub. */
-export const isClosed = (r: PrRecord) => r.summary?.state === "MERGED" || r.summary?.state === "CLOSED";
+export const isClosed = (r: GroupEntry) => r.summary?.state === "MERGED" || r.summary?.state === "CLOSED";
 
 /** Short words for why a row is listed, shown in the repository view. */
 const TAG: Partial<Record<Reason, string>> = {
@@ -59,11 +57,11 @@ export const WHY: Record<Reason, string> = {
 };
 
 /** Listed only because you could review it. */
-export const isOther = (r: PrRecord) => !r.pinned && !!r.summary && r.summary.reasons.every((x) => x === "other");
+export const isOther = (r: GroupEntry) => !r.pinned && !!r.summary && r.summary.reasons.every((x) => x === "other");
 
 /** What sorting needs from a row. */
 export interface SortableRow {
-  record: PrRecord;
+  record: GroupEntry;
   risk: { score: number } | null;
 }
 
@@ -75,13 +73,13 @@ export function compareRows<T extends SortableRow>(sortBy: SortBy): (a: T, b: T)
 }
 
 /** The first relationship group a pull request fits, or null. Merged and closed ones go in Recently merged or closed. */
-export function relationshipOf(r: PrRecord): (typeof RELATIONSHIP)[number] | null {
+export function relationshipOf(r: GroupEntry): (typeof RELATIONSHIP)[number] | null {
   if (isClosed(r)) return CLOSED;
   return reasonGroup(r);
 }
 
 /** The first relationship group a pull request's reasons fit, whatever its state. */
-function reasonGroup(r: PrRecord): (typeof RELATIONSHIP)[number] | null {
+function reasonGroup(r: GroupEntry): (typeof RELATIONSHIP)[number] | null {
   const reasons = r.summary?.reasons || [];
   return RELATIONSHIP.find((g) => (g.reason === "pinned" ? r.pinned : reasons.includes(g.reason))) || null;
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { prChange, reviewCounts, sinceReview, viewerLastReviewFrom } from "../src/core/review-status.ts";
+import { prChange, reviewCounts, sinceReview, viewerLastReviewFrom } from "../src/review-status.ts";
 
 const node = (login: string | null, state: string, submittedAt: string | null, oid: string | null = "c1") => ({
   author: login ? { login } : null,

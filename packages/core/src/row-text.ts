@@ -1,11 +1,11 @@
 // The words on a sidebar row and in its hover: your review and what changed since, the pull request's state, approvals,
-// and the agents' status. Kept apart from VS Code so it can be tested; tree.ts puts it on the row.
+// and the agents' status.
 
-import { reviewFreshness, type PrRecord } from "./service.ts";
+import { reviewFreshness } from "./freshness.ts";
 import { reviewCounts } from "./review-status.ts";
 import { RISK_WORD } from "./risk.ts";
 import { timeAgo } from "./time.ts";
-import type { PullRequestSummary, Risk } from "./types.ts";
+import type { PullRequestEntry, PullRequestInput, Risk } from "./types.ts";
 
 /** "just now", "5m ago", "5h ago", "2d ago": short, for the row. */
 export function shortAgo(iso: string | null | undefined, now = Date.now()): string {
@@ -19,8 +19,8 @@ export function shortAgo(iso: string | null | undefined, now = Date.now()): stri
   return `${Math.round(hours / 24)}d ago`;
 }
 
-const isOpen = (s: Pick<PullRequestSummary, "state"> | null | undefined) => !s?.state || s.state === "OPEN";
-const hasConflicts = (s: Pick<PullRequestSummary, "mergeStateStatus"> | null | undefined) => s?.mergeStateStatus === "DIRTY";
+const isOpen = (s: Pick<PullRequestInput, "state"> | null | undefined) => !s?.state || s.state === "OPEN";
+const hasConflicts = (s: Pick<PullRequestInput, "mergeStateStatus"> | null | undefined) => s?.mergeStateStatus === "DIRTY";
 const OPINION: Record<string, string> = { APPROVED: "approved", CHANGES_REQUESTED: "requested changes" };
 const DID: Record<string, string> = { ...OPINION, COMMENTED: "commented", DISMISSED: "dismissed" };
 
@@ -28,7 +28,7 @@ const DID: Record<string, string> = { ...OPINION, COMMENTED: "commented", DISMIS
  * What you did last, from your latest review: "approved", "commented", or "approved, then commented" when a comment
  * (a reply to a thread is one) came after your approval or change request, which still stands on GitHub.
  */
-function didWords(s: Pick<PullRequestSummary, "viewerReview" | "viewerLastReview">): string {
+function didWords(s: Pick<PullRequestInput, "viewerReview" | "viewerLastReview">): string {
   const last = s.viewerLastReview;
   if (!last) return OPINION[s.viewerReview || ""] || "";
   const before = OPINION[s.viewerReview || ""];
@@ -36,7 +36,7 @@ function didWords(s: Pick<PullRequestSummary, "viewerReview" | "viewerLastReview
   return DID[last.state] || "";
 }
 
-type ReviewFields = Pick<PullRequestSummary, "state" | "own" | "requested" | "viewerReview" | "viewerLastReview" | "sinceReview">;
+type ReviewFields = Pick<PullRequestInput, "state" | "own" | "requested" | "viewerReview" | "viewerLastReview" | "sinceReview">;
 
 /**
  * Your review on the row: "you approved 2d ago · new commits", "you commented 5h ago · updated since",
@@ -59,7 +59,7 @@ export function reviewDescription(s: ReviewFields | null | undefined, now = Date
 }
 
 /** "merged", "closed", or for an open one "draft" and "conflicts" as they apply. */
-export function stateWords(s: Pick<PullRequestSummary, "state" | "isDraft" | "mergeStateStatus"> | null | undefined): string[] {
+export function stateWords(s: Pick<PullRequestInput, "state" | "isDraft" | "mergeStateStatus"> | null | undefined): string[] {
   if (!s) return [];
   if (s.state === "MERGED") return ["merged"];
   if (s.state === "CLOSED") return ["closed"];
@@ -67,7 +67,7 @@ export function stateWords(s: Pick<PullRequestSummary, "state" | "isDraft" | "me
 }
 
 /** A short agent status for the row, and whether the agents are behind the head. */
-export function agentStatus(r: PrRecord, now = Date.now()): { text: string; behind: boolean } {
+export function agentStatus(r: PullRequestEntry, now = Date.now()): { text: string; behind: boolean } {
   const run = r.run;
   const head = r.summary?.headRefOid;
   const behind = !!r.agent && !!head && r.agent.commit !== head;
@@ -107,7 +107,7 @@ const BUSY = new Set(["waiting", "queued", "running", "elsewhere"]);
  * closed: the state and your review, without risk or agent findings (nothing is left to review), unless agents are
  * running on it.
  */
-export function rowDescription(r: PrRecord, row: { risk: Risk | null; tag?: string; inRepoGroup?: boolean }, now = Date.now()): string {
+export function rowDescription(r: PullRequestEntry, row: { risk: Risk | null; tag?: string; inRepoGroup?: boolean }, now = Date.now()): string {
   const s = r.summary;
   const open = isOpen(s);
   const agents = agentStatus(r, now).text;
@@ -125,14 +125,14 @@ export function rowDescription(r: PrRecord, row: { risk: Risk | null; tag?: stri
 }
 
 /** "2 approvals · changes requested by 1", "1 approval", "No approvals yet". */
-export function approvalsLine(s: Pick<PullRequestSummary, "reviewCounts" | "latestReviews">): string {
+export function approvalsLine(s: Pick<PullRequestInput, "reviewCounts" | "latestReviews">): string {
   const c = s.reviewCounts || reviewCounts(s.latestReviews);
   const parts = [c.approvals ? `${c.approvals} approval${c.approvals === 1 ? "" : "s"}` : "", c.changesRequested ? `changes requested by ${c.changesRequested}` : ""].filter(Boolean);
   return parts.length ? parts.join(" · ") : "No approvals yet";
 }
 
 /** The pull request's state for the hover: "Open", "Open, draft · conflicts with main", "Merged 2 days ago", "Closed 3 days ago without merging". */
-export function stateLine(s: Pick<PullRequestSummary, "state" | "isDraft" | "mergeStateStatus" | "mergedAt" | "closedAt" | "baseRefName">, now = Date.now()): string {
+export function stateLine(s: Pick<PullRequestInput, "state" | "isDraft" | "mergeStateStatus" | "mergedAt" | "closedAt" | "baseRefName">, now = Date.now()): string {
   if (s.state === "MERGED") return `Merged${s.mergedAt ? ` ${timeAgo(s.mergedAt, now)}` : ""}`;
   if (s.state === "CLOSED") return `Closed${s.closedAt ? ` ${timeAgo(s.closedAt, now)}` : ""} without merging`;
   return `Open${s.isDraft ? ", draft" : ""}${hasConflicts(s) ? ` · conflicts with ${s.baseRefName || "its base branch"}` : ""}`;
@@ -157,7 +157,7 @@ export function yourReviewLines(s: ReviewFields | null | undefined, now = Date.n
 }
 
 /** The agents' review in the hover, said as since the agents ran so it isn't taken for since your review. */
-export function agentLines(r: PrRecord, now = Date.now()): string[] {
+export function agentLines(r: PullRequestEntry, now = Date.now()): string[] {
   const fresh = reviewFreshness(r.agent, r.summary);
   if (fresh.state === "none") return ["No agent review yet."];
   const n = r.agent!.findings.length;

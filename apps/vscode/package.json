@@ -713,6 +713,7 @@
     "install-local": "sh scripts/install-local.sh"
   },
   "dependencies": {
+    "@diffline/core": "*",
     "yaml": "^2.9.1"
   },
   "devDependencies": {

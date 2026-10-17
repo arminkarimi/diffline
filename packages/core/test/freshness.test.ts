@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { reviewFreshness } from "../src/core/service.ts";
-import { timeAgo } from "../src/core/time.ts";
+import { reviewFreshness } from "../src/freshness.ts";
+import { timeAgo } from "../src/time.ts";
 
 const agent = { commit: "abc", ranAt: "2026-10-10T12:00:00Z", findings: [], description: null };
 

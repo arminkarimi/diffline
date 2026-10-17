@@ -3,10 +3,11 @@
 import * as vscode from "vscode";
 
 import { formatTokens } from "../agents/harness.ts";
-import { reviewFreshness, type DifflineService, type PrRecord } from "../core/service.ts";
-import { WHY } from "../core/grouping.ts";
-import { agentLines, agentStatus, approvalsLine, rowDescription, stateLine, yourReviewLines } from "../core/row-text.ts";
-import { RISK_WORD } from "../core/risk.ts";
+import { reviewFreshness } from "@diffline/core/freshness";
+import { WHY } from "@diffline/core/grouping";
+import { RISK_WORD } from "@diffline/core/risk";
+import { agentLines, agentStatus, approvalsLine, rowDescription, stateLine, yourReviewLines } from "@diffline/core/row-text";
+import type { DifflineService, PrRecord } from "../core/service.ts";
 import type { Risk } from "../core/types.ts";
 import { prKeyString } from "../core/types.ts";
 

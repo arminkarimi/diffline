@@ -25,11 +25,12 @@ From the repository root:
 | Command | What it does |
 | --- | --- |
 | `npm run build` | Bundles the extension and copies the review page into it. |
-| `npm test` | Runs the unit tests with Node's test runner. |
-| `npm run typecheck` | Type-checks the extension and its tests. |
+| `npm test` | Runs the unit tests with Node's test runner, in each workspace: `apps/vscode` and `packages/core`. |
+| `npm run typecheck` | Type-checks the extension, `packages/core` and their tests. |
 | `npm run package` | Builds a minified bundle and writes `apps/vscode/diffline-<version>.vsix`. |
 | `npm run install-local` | Packages the extension and installs it into VS Code, replacing the installed version. Set `CODE` to use another editor's CLI (`CODE=cursor`, `CODE=code-insiders`). Reload the window afterwards. |
 | `npm run watch -w apps/vscode` | Rebuilds the bundle on every change. |
+| `npm test -w packages/core` | Runs one workspace's tests (`-w apps/vscode` for the extension's). `npm run typecheck -w …` works the same way. |
 
 CI runs `npm ci`, the typecheck, the tests and the package step on every push and pull request (`.github/workflows/ci.yml`). Run the same before you push.
 
@@ -95,12 +96,13 @@ DIFFLINE_SMOKE_PR=owner/name#123 ./scripts/open-timing.sh
 
 - **Match the code around you.** Naming, structure and formatting follow the file you're in. Indent with 2 spaces (`.editorconfig`).
 - **Comments explain why**, in plain English. Say what a reader can't see from the code: the constraint, the failure it prevents, the reason for an odd choice. Don't narrate what the next line does.
-- **TypeScript runs without a compile step**, so the extension uses `erasableSyntaxOnly`: no enums, no namespaces, no parameter properties. Import with the `.ts` extension. `npm run typecheck` enforces this.
+- **TypeScript runs without a compile step**, so the extension and `packages/core` use `erasableSyntaxOnly`: no enums, no namespaces, no parameter properties. Relative imports use the `.ts` extension. `npm run typecheck` enforces this.
 - **`src/core` and `src/agents` don't import `vscode`**, so they stay testable with plain Node. VS Code code goes in `src/vscode` and `src/extension.ts`.
+- **Product rules live in `packages/core`** (`@diffline/core`): how pull requests are grouped and sorted, review status and what changed since a review, the risk score, `CODEOWNERS` matching, the words on a row, relative times. Only pure functions over the core's own input types (`packages/core/src/types.ts`) go there: no GitHub client, storage, UI or editor APIs. The extension imports them by subpath (`@diffline/core/grouping`, no `.ts`) and passes its own types, which must stay assignable to the core's inputs; the typecheck says when they aren't. [docs/architecture.md](docs/architecture.md#product-rules) has more.
 - **The review page** (`packages/review-ui`) is plain HTML, CSS and JavaScript with no build step and no dependencies.
-- **`src/core/risk.ts` mirrors `computeRisk` in `packages/review-ui/app.js`.** Change both together.
+- **`packages/core/src/risk.ts` mirrors `computeRisk` in `packages/review-ui/app.js`.** Change both together; `packages/core/test/risk.test.ts` checks they agree.
 - **Text people read** (messages, settings descriptions, docs) uses short sentences and plain words. Say what happened and what to do next.
-- **Add a test** for a behavior change. Tests live in `apps/vscode/test/`.
+- **Add a test** for a behavior change. Tests live next to the code: `packages/core/test/` for the product rules, `apps/vscode/test/` for the extension.
 
 ## Commit messages
 
