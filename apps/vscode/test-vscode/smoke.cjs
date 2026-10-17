@@ -26,10 +26,22 @@ exports.run = async () => {
   step(`activated in ${Date.now() - t} ms`);
 
   const commands = await vscode.commands.getCommands(true);
-  for (const c of ["diffline.refresh", "diffline.open", "diffline.openPullRequest", "diffline.runAgents", "diffline.cancelAgents", "diffline.selectHarness", "diffline.editAgentInstructions", "diffline.resetAgentSettings", "diffline.showLog", "diffline.newAgent", "diffline.removeAgent", "diffline.openHome", "diffline.groupBy", "diffline.sortBy", "diffline.showMetrics", "diffline.deleteMetrics", "diffline.copyAgentReview", "diffline.copyLink"]) {
+  for (const c of ["diffline.refresh", "diffline.open", "diffline.openPullRequest", "diffline.runAgents", "diffline.cancelAgents", "diffline.selectHarness", "diffline.editAgentInstructions", "diffline.resetAgentSettings", "diffline.showLog", "diffline.newAgent", "diffline.removeAgent", "diffline.openHome", "diffline.groupBy", "diffline.sortBy", "diffline.showMetrics", "diffline.deleteMetrics", "diffline.copyAgentReview", "diffline.copyLink", "diffline.checkSetup", "diffline.getStarted", "diffline.setup.checkAgain", "diffline.setup.signIn"]) {
     assert.ok(commands.includes(c), `command ${c} is registered`);
   }
   step("commands registered");
+
+  // The setup check activation ran: git, gh signed in and an agent CLI, with versions. Its notification shows only when
+  // something is missing.
+  const setup = await api.setupCheck;
+  assert.ok(setup, "the setup check ran");
+  step(`setup: git ${setup.git}, gh ${setup.gh} (${setup.ghAuth}), claude ${setup.harnesses.claude}, codex ${setup.harnesses.codex}, pi ${setup.harnesses.pi}`);
+  assert.ok(setup.git && setup.gh && setup.ghAuth === "signedIn", "git and gh are found, and gh is signed in");
+  // The walkthrough Get Started opens (diffline.getStarted falls back to a quick pick, which would wait here).
+  await vscode.commands.executeCommand("workbench.action.openWalkthrough", { category: "diffline.diffline#getStarted", step: "agentCli" }, false);
+  const tab = await until(() => vscode.window.tabGroups.activeTabGroup.activeTab, 10000, "the walkthrough tab");
+  step(`walkthrough opened in a tab: ${tab.label}`);
+  await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
 
   t = Date.now();
   await vscode.commands.executeCommand("diffline.refresh");

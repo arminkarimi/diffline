@@ -2,6 +2,7 @@
 
 What Diffline does today, in the VS Code extension. Settings and setup are in the [extension's README](../apps/vscode/README.md).
 
+- [Setup](#setup)
 - [Read changes in order](#read-changes-in-order)
 - [The description check](#the-description-check)
 - [Agents review first](#agents-review-first)
@@ -18,6 +19,17 @@ What Diffline does today, in the VS Code extension. Settings and setup are in th
 - [Posting to GitHub](#posting-to-github)
 - [Review metrics](#review-metrics)
 - [Keyboard](#keyboard)
+
+## Setup
+
+Diffline needs git, the GitHub CLI signed in, and an agent CLI: Claude Code, Codex or Pi. When it starts, it checks for each one, in parallel and without signing in or spending tokens, and says what's missing:
+
+- **Get started with Diffline**, a walkthrough VS Code opens on install, has a step for each with the install commands for macOS, Windows and Linux. Steps tick off as Diffline finds what it needs. **Diffline: Get Started** opens it again.
+- **A notification** names what's missing. **Set up** opens the walkthrough at that step. It shows once per session for the same problems, and **Don't show again** turns it off.
+- **The sidebar**, while its list is empty, explains each problem, with a button to install, to sign in, or to choose another agent CLI, and **Check again**. Sign-in buttons open a terminal with the command typed in, such as `gh auth login`; you press Enter.
+- **Diffline: Check Setup** lists what it found, with versions, and picking a row fixes it.
+
+Diffline checks again when you press **Refresh** or **Check again**, after **Choose Agent Harnesses…**, when a CLI's path setting changes, and when GitHub calls fail because `gh` is missing or signed out. When agents fail because their CLI is missing or signed out, the notification offers **Set up** too.
 
 ## Read changes in order
 

@@ -17,12 +17,37 @@ registerHooks({
 process.env.DIFFLINE_HOME = await mkdtemp(path.join(os.tmpdir(), "diffline-ext-home-"));
 const fake = await import("./fake-vscode.ts");
 const { setGhRunner } = await import("../src/core/github.ts");
+const { setSetupRunner } = await import("../src/core/setup.ts");
 const { activate } = await import("../src/extension.ts");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+/** What the setup check finds: "command args" → its output; anything else isn't installed. */
+type Programs = Record<string, string>;
+const EVERYTHING: Programs = {
+  "git --version": "git version 2.50.1",
+  "gh --version": "gh version 2.88.1 (2026-03-12)",
+  "gh auth status": "github.com\n  ✓ Logged in to github.com account me (keyring)\n",
+  "claude --version": "2.1.211 (Claude Code)",
+};
+function installed(programs: Programs) {
+  setSetupRunner(async (command, args) => {
+    const out = programs[[command, ...args].join(" ")];
+    if (out === undefined) throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: "ENOENT" });
+    return { code: 0, stdout: out, stderr: "", killed: false };
+  });
+}
+
+/** The last value the extension gave each setup context key. */
+function setupKeys(): Record<string, unknown> {
+  const keys: Record<string, unknown> = {};
+  for (const [cmd, key, value] of fake.executed) if (cmd === "setContext" && String(key).startsWith("diffline.setup.")) keys[key as string] = value;
+  return keys;
+}
+
 /** Activate with a fake gh that answers every query with an empty list, recording what was asked. */
-async function start() {
+async function start(opts: { programs?: Programs; memory?: Map<string, unknown> } = {}) {
+  installed(opts.programs ?? EVERYTHING);
   const queries: string[] = [];
   setGhRunner(async (args) => {
     queries.push(args.find((a) => a.startsWith("query="))?.slice(6) ?? args.join(" "));
@@ -30,7 +55,7 @@ async function start() {
   });
   // Only the main search runs in the background, so every other request is the test's.
   for (const [k, v] of Object.entries({ "diffline.watch.teamRequests": false, "diffline.watch.othersToReview": false, "diffline.watch.recentlyClosedDays": 0, "diffline.watch.codeOwners": false, "diffline.agents.autoRun": false })) fake.settings.set(k, v);
-  const memory = new Map<string, unknown>();
+  const memory = opts.memory ?? new Map<string, unknown>();
   const context = {
     subscriptions: [] as Array<{ dispose(): unknown }>,
     globalStorageUri: { fsPath: await mkdtemp(path.join(os.tmpdir(), "diffline-ext-")) },
@@ -40,6 +65,7 @@ async function start() {
   };
   const api = (await activate(context as any))!;
   await api.service.refresh();
+  await api.setupCheck;
   // The review panel isn't under test here: record what it was asked to open.
   const opened: string[] = [];
   api.panel.show = async (key: { owner: string; name: string; number: number }) => void opened.push(`${key.owner}/${key.name}#${key.number}`);
@@ -47,8 +73,9 @@ async function start() {
   const stop = () => {
     for (const d of context.subscriptions) d.dispose();
     setGhRunner(null);
+    setSetupRunner(null);
   };
-  return { api, opened, queries, stop };
+  return { api, opened, queries, stop, memory };
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30));
@@ -147,4 +174,128 @@ test("activate: waits while the old arminkarimi.diffline is installed, with a co
   } finally {
     fake.installed.delete("arminkarimi.diffline");
   }
+});
+
+/* Setup: the check on activation, its context keys and its notification. */
+
+const setupWarnings = () => fake.shown.filter(([kind, text]) => kind === "warning" && text.startsWith("Diffline isn't set up yet"));
+
+test("setup: gh missing sets its context key and notifies once, with Set up opening the walkthrough at its step", async () => {
+  fake.shown.length = 0;
+  fake.executed.length = 0;
+  fake.answers.push({ match: /^Diffline isn't set up yet/, answer: "Set up" });
+  const programs = Object.fromEntries(Object.entries(EVERYTHING).filter(([k]) => !k.startsWith("gh ")));
+  const { api, stop } = await start({ programs });
+  try {
+    await settle();
+    const keys = setupKeys();
+    assert.equal(keys["diffline.setup.checked"], true);
+    assert.equal(keys["diffline.setup.ghMissing"], true);
+    assert.equal(keys["diffline.setup.ghSignedOut"], false, "a missing gh isn't also signed out");
+    assert.equal(keys["diffline.setup.incomplete"], true);
+    assert.deepEqual(setupWarnings().map(([, text]) => text), ["Diffline isn't set up yet: install the GitHub CLI (gh)."]);
+    assert.deepEqual(setupWarnings()[0][2], ["Set up", "Not now", "Don't show again"]);
+    assert.deepEqual(
+      fake.executed.find(([cmd]) => cmd === "workbench.action.openWalkthrough"),
+      ["workbench.action.openWalkthrough", { category: "diffline.diffline#getStarted", step: "githubCli" }, false],
+    );
+
+    // gh fails to run while polling: the check runs again, but the same missing set isn't announced twice.
+    const checks = fake.executed.filter(([cmd, key]) => cmd === "setContext" && key === "diffline.setup.checked").length;
+    setGhRunner(async () => {
+      throw Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" });
+    });
+    await api.service.refresh().catch(() => undefined);
+    await settle();
+    assert.equal(api.service.lastErrorKind, "missing");
+    assert.ok(fake.executed.filter(([cmd, key]) => cmd === "setContext" && key === "diffline.setup.checked").length > checks, "checked again");
+    assert.equal(setupWarnings().length, 1);
+
+    // Installed now: Check again clears the key and says so.
+    installed(EVERYTHING);
+    await fake.registered.get("diffline.setup.checkAgain")!();
+    assert.equal(setupKeys()["diffline.setup.ghMissing"], false);
+    assert.equal(setupKeys()["diffline.setup.incomplete"], false);
+    assert.equal(fake.shown.at(-1)![1], "Diffline has everything it needs.");
+  } finally {
+    stop();
+  }
+});
+
+test("setup: with everything there, no notification and every problem key is off", async () => {
+  fake.shown.length = 0;
+  fake.executed.length = 0;
+  const { stop } = await start();
+  try {
+    await settle();
+    assert.deepEqual(setupWarnings(), []);
+    const keys = setupKeys();
+    for (const k of ["gitMissing", "ghMissing", "ghSignedOut", "noHarness", "defaultHarnessMissing", "incomplete"]) assert.equal(keys[`diffline.setup.${k}`], false, k);
+    assert.equal(keys["diffline.setup.checked"], true);
+  } finally {
+    stop();
+  }
+});
+
+test("setup: Don't show again lasts across sessions, for any missing set", async () => {
+  fake.shown.length = 0;
+  const memory = new Map<string, unknown>();
+  fake.answers.push({ match: /^Diffline isn't set up yet/, answer: "Don't show again" });
+  const first = await start({ programs: { "git --version": "git version 2.50.1", "gh --version": "gh version 2.88.1", "gh auth status": "✓ Logged in to github.com account me" }, memory });
+  await settle();
+  first.stop();
+  assert.equal(setupWarnings().length, 1);
+  assert.equal(memory.get("diffline.setup.dontShow"), true);
+
+  // A new session, missing something else too: still quiet, but the welcome view's keys are set.
+  fake.executed.length = 0;
+  const second = await start({ programs: { "git --version": "git version 2.50.1" }, memory });
+  try {
+    await settle();
+    assert.equal(setupWarnings().length, 1);
+    assert.equal(setupKeys()["diffline.setup.ghMissing"], true);
+    assert.equal(setupKeys()["diffline.setup.noHarness"], true);
+  } finally {
+    second.stop();
+  }
+});
+
+test("setup: a missing agent CLI's failure offers Set up; Sign in types the command without pressing Enter", async () => {
+  const { api, stop } = await start();
+  try {
+    fake.answers.push({ match: /^Agents failed on #7/, answer: "Set up" });
+    fake.executed.length = 0;
+    api.service.emit("runFailed", { owner: "acme", name: "web", number: 7 }, "The Codex CLI wasn't found.", "missing");
+    await settle();
+    assert.deepEqual(fake.shown.find(([, text]) => text.startsWith("Agents failed on #7"))?.[2], ["Choose harnesses", "Set up", "Show log"]);
+    assert.deepEqual(fake.executed.find(([cmd]) => cmd === "workbench.action.openWalkthrough")?.[1], { category: "diffline.diffline#getStarted", step: "agentCli" });
+
+    await fake.registered.get("diffline.setup.signIn")!("gh");
+    const terminal = fake.terminals.at(-1)!;
+    assert.deepEqual(terminal.sent, [["gh auth login", false]]);
+    assert.ok(terminal.shown);
+    fake.settings.set("diffline.pi.path", "/My Tools/pi");
+    await fake.registered.get("diffline.setup.signIn")!("pi");
+    assert.deepEqual(fake.terminals.at(-1)!.sent, [["pi", false]], "a path with spaces types the plain name");
+    fake.settings.delete("diffline.pi.path");
+  } finally {
+    stop();
+  }
+});
+
+test("package.json: the walkthrough's steps tick off on the setup keys, and every welcome view and step command exists", async () => {
+  const pkg = JSON.parse(await readFile(path.join(here, "..", "package.json"), "utf8"));
+  const [walkthrough] = pkg.contributes.walkthroughs;
+  assert.equal(walkthrough.id, "getStarted");
+  assert.deepEqual(walkthrough.steps.map((s: { id: string }) => s.id), ["git", "githubCli", "signIn", "agentCli", "harness", "openPullRequest"]);
+  for (const step of walkthrough.steps) {
+    assert.ok(step.completionEvents.length, step.id);
+    const media = path.join(here, "..", step.media.markdown);
+    assert.ok((await readFile(media, "utf8")).length < 4000, `${step.media.markdown} is small`);
+  }
+  const ids = new Set([...pkg.contributes.commands.map((c: { command: string }) => c.command), "workbench.view.extension.diffline"]);
+  const text = [...pkg.contributes.viewsWelcome.map((w: { contents: string }) => w.contents), ...walkthrough.steps.map((s: { description: string }) => s.description)].join("\n");
+  for (const [, id] of text.matchAll(/\(command:([\w.]+)/g)) assert.ok(ids.has(id), `${id} is a command`);
+  for (const id of ["diffline.checkSetup", "diffline.getStarted", "diffline.setup.checkAgain", "diffline.setup.signIn"]) assert.ok(fake.registered.has(id), `${id} is registered`);
+  assert.match(await readFile(path.join(here, "..", ".vscodeignore"), "utf8"), /^!media\/walkthrough\/\*\.md$/m);
 });

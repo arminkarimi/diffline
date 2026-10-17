@@ -78,7 +78,114 @@
     "viewsWelcome": [
       {
         "view": "diffline.pullRequests",
-        "contents": "Diffline lists pull requests that need your review and the ones you opened.\n[Refresh](command:diffline.refresh)\n[Open a pull request](command:diffline.openPullRequest)\nDiffline uses the GitHub CLI. If nothing shows up, run `gh auth login` in a terminal."
+        "when": "!diffline.setup.incomplete",
+        "contents": "Diffline lists pull requests that need your review and the ones you opened.\n[Refresh](command:diffline.refresh)\n[Open a pull request](command:diffline.openPullRequest)\nIf nothing shows up, [check the setup](command:diffline.checkSetup)."
+      },
+      {
+        "view": "diffline.pullRequests",
+        "when": "diffline.setup.gitMissing",
+        "contents": "Diffline needs git to fetch the commits you review, and git isn't installed or isn't on the PATH.\n[Install git](https://git-scm.com/install/)"
+      },
+      {
+        "view": "diffline.pullRequests",
+        "when": "diffline.setup.ghMissing",
+        "contents": "Diffline reads pull requests through the GitHub CLI (gh), and it isn't installed or isn't on the PATH.\n[Install the GitHub CLI](https://cli.github.com)"
+      },
+      {
+        "view": "diffline.pullRequests",
+        "when": "diffline.setup.ghSignedOut",
+        "contents": "The GitHub CLI isn't signed in. The button opens a terminal with gh auth login typed in: press Enter and follow its steps.\n[Sign in to GitHub](command:diffline.setup.signIn?%5B%22gh%22%5D)"
+      },
+      {
+        "view": "diffline.pullRequests",
+        "when": "diffline.setup.noHarness",
+        "contents": "The review agents run on an agent CLI, and none is installed. Install one of [Claude Code](https://code.claude.com/docs/en/setup), [Codex](https://github.com/openai/codex) or [Pi](https://pi.dev), then run it once in a terminal to sign in.\n[Install an agent CLI](command:diffline.getStarted?%5B%22agentCli%22%5D)"
+      },
+      {
+        "view": "diffline.pullRequests",
+        "when": "diffline.setup.defaultHarnessMissing",
+        "contents": "The default agent CLI (the diffline.harness setting) isn't installed, but another one is. Choose the one the agents run on.\n[Choose agent harnesses](command:diffline.selectHarness)"
+      },
+      {
+        "view": "diffline.pullRequests",
+        "when": "diffline.setup.incomplete",
+        "contents": "Installed something? Check again. If it still isn't found, restart the editor so it sees the new program.\n[Check again](command:diffline.setup.checkAgain)\n[Get started](command:diffline.getStarted)"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "getStarted",
+        "title": "Get started with Diffline",
+        "description": "Install what Diffline needs, sign in, choose the agent CLI and open your first review.",
+        "steps": [
+          {
+            "id": "git",
+            "title": "Install git",
+            "description": "Diffline fetches the commits of the pull requests you review with git.\n[Install git](https://git-scm.com/install/)\n[Check again](command:diffline.setup.checkAgain)",
+            "media": {
+              "markdown": "media/walkthrough/git.md"
+            },
+            "completionEvents": [
+              "onContext:diffline.setup.checked && !diffline.setup.gitMissing"
+            ]
+          },
+          {
+            "id": "githubCli",
+            "title": "Install the GitHub CLI",
+            "description": "Diffline reads pull requests and posts your reviews through the GitHub CLI, gh.\n[Install the GitHub CLI](https://cli.github.com)\n[Check again](command:diffline.setup.checkAgain)",
+            "media": {
+              "markdown": "media/walkthrough/github-cli.md"
+            },
+            "completionEvents": [
+              "onContext:diffline.setup.checked && !diffline.setup.ghMissing"
+            ]
+          },
+          {
+            "id": "signIn",
+            "title": "Sign in to GitHub",
+            "description": "Sign in to the GitHub CLI once; Diffline uses its sign-in. This opens a terminal with gh auth login typed in: press Enter and follow its steps.\n[Sign in to GitHub](command:diffline.setup.signIn?%5B%22gh%22%5D)\n[Check again](command:diffline.setup.checkAgain)",
+            "media": {
+              "markdown": "media/walkthrough/sign-in.md"
+            },
+            "completionEvents": [
+              "onContext:diffline.setup.checked && !diffline.setup.ghMissing && !diffline.setup.ghSignedOut"
+            ]
+          },
+          {
+            "id": "agentCli",
+            "title": "Install an agent CLI",
+            "description": "The review agents run on Claude Code, Codex or Pi, on your computer, with your own account. Install one, then sign in: each button opens a terminal with the CLI typed in.\n[Sign in to Claude Code](command:diffline.setup.signIn?%5B%22claude%22%5D)\n[Sign in to Codex](command:diffline.setup.signIn?%5B%22codex%22%5D)\n[Sign in to Pi](command:diffline.setup.signIn?%5B%22pi%22%5D)\n[Check again](command:diffline.setup.checkAgain)",
+            "media": {
+              "markdown": "media/walkthrough/agent-cli.md"
+            },
+            "completionEvents": [
+              "onContext:diffline.setup.checked && !diffline.setup.noHarness"
+            ]
+          },
+          {
+            "id": "harness",
+            "title": "Choose the agent CLI",
+            "description": "Pick the CLI the agents run on by default, and if you like a different one per agent. It shows which CLIs Diffline found.\n[Choose agent harnesses](command:diffline.selectHarness)",
+            "media": {
+              "markdown": "media/walkthrough/harness.md"
+            },
+            "completionEvents": [
+              "onCommand:diffline.selectHarness"
+            ]
+          },
+          {
+            "id": "openPullRequest",
+            "title": "Open a pull request",
+            "description": "Pick a pull request in the Diffline sidebar, or open any by its GitHub link, and press Run to start the agents.\n[Open a pull request](command:diffline.openPullRequest)\n[Show the sidebar](command:workbench.view.extension.diffline)",
+            "media": {
+              "markdown": "media/walkthrough/first-pr.md"
+            },
+            "completionEvents": [
+              "onCommand:diffline.openPullRequest",
+              "onCommand:diffline.open"
+            ]
+          }
+        ]
       }
     ],
     "commands": [
@@ -152,6 +259,26 @@
         "title": "Show Agent Log",
         "category": "Diffline",
         "icon": "$(output)"
+      },
+      {
+        "command": "diffline.checkSetup",
+        "title": "Check Setup",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.getStarted",
+        "title": "Get Started",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.setup.checkAgain",
+        "title": "Check Setup Again",
+        "category": "Diffline"
+      },
+      {
+        "command": "diffline.setup.signIn",
+        "title": "Sign In to a CLI in a Terminal…",
+        "category": "Diffline"
       },
       {
         "command": "diffline.selectHarness",
@@ -285,6 +412,14 @@
         },
         {
           "command": "diffline.removePullRequest",
+          "when": "false"
+        },
+        {
+          "command": "diffline.setup.checkAgain",
+          "when": "false"
+        },
+        {
+          "command": "diffline.setup.signIn",
           "when": "false"
         }
       ]

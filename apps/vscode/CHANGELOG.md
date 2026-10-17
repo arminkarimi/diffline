@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **No log button in the sidebar's title bar.** **Diffline: Show Agent Log** is still in the Command Palette.
+- **Setup guidance on first run.** Diffline checks for git, the GitHub CLI and its sign-in, and an agent CLI (Claude Code, Codex or Pi) when it starts. **Get started with Diffline**, a walkthrough that opens on install, has the install commands for macOS, Windows and Linux and ticks off each step as Diffline finds it. A notification names what's missing, once per session (**Don't show again** turns it off), and the empty sidebar explains each problem with buttons to install, sign in in a terminal and **Check again**. **Diffline: Check Setup** lists what's found, with versions, and **Diffline: Get Started** reopens the walkthrough. When agents fail because their CLI is missing or signed out, the notification offers **Set up**.
 
 ## 0.4.1
 

@@ -6,6 +6,7 @@ import { addAgent, agentIdFor, ensureSettings, instructionsFile, loadSettings, r
 import { clipboardPullRequest, parseOpenLink, reviewLink } from "./core/links.ts";
 import { adoptOldStorage, OLD_EXTENSION_ID } from "./core/migrate.ts";
 import { Repos } from "./core/repos.ts";
+import { checkSetup, installHint, issuesKey, setupContext, setupIssues, setupMessage, terminalCommand, TOOL_HELP, type SetupIssue, type SetupReport } from "./core/setup.ts";
 import { approverWords, DifflineService, parseKey, RECENTLY_CLOSED_DAYS, type ApprovedPolicy, type ServiceConfig } from "./core/service.ts";
 import { Store } from "./core/store.ts";
 import type { AgentFailure } from "./agents/review.ts";
@@ -79,7 +80,15 @@ export interface DifflineApi {
   panel: ReviewPanel;
   /** Open a pull request's review the way a link does. */
   openLink(key: PrKey): Promise<void>;
+  /** The setup check activation started (git, gh signed in, the agent CLIs). */
+  setupCheck: Promise<SetupReport | null>;
 }
+
+/** The walkthrough in package.json (contributes.walkthroughs), and its step for each setup issue. */
+const WALKTHROUGH = "diffline.diffline#getStarted";
+const ISSUE_STEP: Record<SetupIssue, string> = { git: "git", gh: "githubCli", ghAuth: "signIn", harness: "agentCli", defaultHarness: "harness" };
+/** globalState: the user turned off the setup notification. */
+const SETUP_DONT_SHOW = "diffline.setup.dontShow";
 
 /**
  * Before 0.4.1 Diffline's ID was arminkarimi.diffline. Both can't run at once (same commands and views), so while the
@@ -156,6 +165,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     view.badge = running ? { value: running, tooltip: `${running} agent run${running === 1 ? "" : "s"} in progress` } : undefined;
   };
   service.on("change", updateStatus);
+  // gh went missing or signed out, or works again: check the setup, so the welcome view and the walkthrough follow.
+  let ghProblem: string | null = null;
+  service.on("change", () => {
+    const kind = service.lastErrorKind === "missing" || service.lastErrorKind === "auth" ? service.lastErrorKind : null;
+    if (kind === ghProblem) return;
+    ghProblem = kind;
+    void recheckSetup().then((report) => kind && offerSetup(report), () => undefined);
+  });
 
   service.on("runFinished", async (key: PrKey, file: AgentFile, failed: AgentFailure[]) => {
     const n = file.findings.length;
@@ -165,14 +182,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
       `Agents finished #${key.number}: ${n} finding${n === 1 ? "" : "s"}${failed.length ? `, ${failed.length} agent${failed.length === 1 ? "" : "s"} failed` : ""}.` +
       (setup.length ? ` ${setup[0].error}` : "");
     const open = showing ? "Reload review" : "Open review";
-    const choice = await vscode.window.showInformationMessage(msg, open, ...(setup.length ? ["Choose harnesses"] : []));
+    if (setup.length) void recheckSetup();
+    const choice = await vscode.window.showInformationMessage(msg, open, ...(setup.length ? ["Choose harnesses", "Set up"] : []));
     if (choice === "Choose harnesses") void vscode.commands.executeCommand("diffline.selectHarness");
+    else if (choice === "Set up") void openWalkthrough("agentCli");
     else if (choice) await panel.show(key);
   });
   service.on("runFailed", async (key: PrKey, message: string, kind: string) => {
-    const actions = kind === "missing" || kind === "auth" ? ["Choose harnesses", "Show log"] : ["Show log"];
+    const setup = kind === "missing" || kind === "auth";
+    if (setup) void recheckSetup();
+    const actions = setup ? ["Choose harnesses", "Set up", "Show log"] : ["Show log"];
     const choice = await vscode.window.showErrorMessage(`Agents failed on #${key.number}: ${message}`, ...actions);
     if (choice === "Choose harnesses") void vscode.commands.executeCommand("diffline.selectHarness");
+    if (choice === "Set up") void openWalkthrough("agentCli");
     if (choice === "Show log") output.show(true);
   });
 
@@ -397,10 +419,146 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     }
   };
 
+  /* Setup: git, the GitHub CLI signed in, and an agent CLI (core/setup.ts). */
+
+  let lastSetup: SetupReport | null = null;
+  let setupRunning: Promise<SetupReport> | null = null;
+  let setupQueued: Promise<SetupReport> | null = null;
+  /** The sets of issues the notification named this session, so each shows once. */
+  const setupNotified = new Set<string>();
+
+  const runSetupCheck = async (): Promise<SetupReport> => {
+    const cfg = readConfig().harnesses;
+    const report = await checkSetup({ harnesses: cfg, defaultHarness: cfg.default });
+    const before = lastSetup ? setupIssues(lastSetup) : [];
+    lastSetup = report;
+    // The sidebar's welcome view and the walkthrough's steps follow these (package.json).
+    for (const [key, value] of Object.entries(setupContext(report))) await vscode.commands.executeCommand("setContext", key, value);
+    const auth = { signedIn: "signed in", signedOut: "signed out", unknown: "sign-in unknown" }[report.ghAuth];
+    log(
+      `Setup: git ${report.git ?? "not found"}; gh ${report.gh ? `${report.gh}, ${auth}` : "not found"}; ` +
+        HARNESS_IDS.map((id) => `${id} ${report.harnesses[id] ?? "not found"}`).join("; "),
+    );
+    // GitHub works now: list the pull requests without waiting for the next poll.
+    const issues = setupIssues(report);
+    if (before.some((i) => i === "gh" || i === "ghAuth") && !issues.some((i) => i === "gh" || i === "ghAuth")) void service.refresh({ full: true }).catch(() => undefined);
+    return report;
+  };
+
+  /** Check again, one at a time: a check asked for while one runs waits for it, and several asks share one. */
+  const recheckSetup = (): Promise<SetupReport> => {
+    if (setupQueued) return setupQueued;
+    const start = () => (setupRunning = runSetupCheck().finally(() => (setupRunning = null)));
+    if (!setupRunning) return start();
+    setupQueued = setupRunning
+      .catch(() => undefined)
+      .then(() => {
+        setupQueued = null;
+        return start();
+      });
+    return setupQueued;
+  };
+
+  /** Get started with Diffline, at a step. Without walkthroughs (some editors), the Check Setup report instead. */
+  const openWalkthrough = async (step?: string) => {
+    try {
+      await vscode.commands.executeCommand("workbench.action.openWalkthrough", step ? { category: WALKTHROUGH, step } : WALKTHROUGH, false);
+    } catch (err) {
+      log(`Couldn't open the walkthrough: ${err instanceof Error ? err.message : err}`);
+      await showSetupReport(await recheckSetup());
+    }
+  };
+
+  /** One notification for what's missing: once per set of issues per session, and never after Don't show again. */
+  const offerSetup = async (report: SetupReport) => {
+    const issues = setupIssues(report);
+    if (!issues.length || context.globalState.get<boolean>(SETUP_DONT_SHOW, false)) return;
+    const key = issuesKey(issues);
+    if (setupNotified.has(key)) return;
+    setupNotified.add(key);
+    const choice = await vscode.window.showWarningMessage(setupMessage(report), "Set up", "Not now", "Don't show again");
+    if (choice === "Set up") await openWalkthrough(ISSUE_STEP[issues[0]]);
+    else if (choice === "Don't show again") await context.globalState.update(SETUP_DONT_SHOW, true);
+  };
+
+  /** A terminal with the sign-in typed in; the user presses Enter. Diffline never signs in for them. */
+  const signIn = async (tool: unknown) => {
+    const id = tool === "gh" || isHarnessId(tool) ? tool : undefined;
+    const which =
+      id ??
+      (
+        await vscode.window.showQuickPick(
+          (["gh", ...HARNESS_IDS] as const).map((t) => ({ label: TOOL_HELP[t].name, description: TOOL_HELP[t].signIn?.command, value: t })),
+          { title: "Sign in to which CLI?" },
+        )
+      )?.value;
+    if (!which) return;
+    const help = TOOL_HELP[which];
+    const typed = which === "gh" ? help.signIn!.command : terminalCommand(readConfig().harnesses[which].command, which);
+    const terminal = vscode.window.createTerminal({ name: `Sign in: ${help.name}` });
+    terminal.show();
+    terminal.sendText(typed, false);
+    const choice = await vscode.window.showInformationMessage(`${help.signIn!.steps} Then press Check again.`, "Check again");
+    if (choice) await vscode.commands.executeCommand("diffline.setup.checkAgain");
+  };
+
+  /** Check Setup: what's found, with versions, and a fix on each row that needs one. */
+  const showSetupReport = async (r: SetupReport) => {
+    const issues = setupIssues(r);
+    type Item = vscode.QuickPickItem & { run?: () => unknown };
+    const open = (url: string) => () => vscode.env.openExternal(vscode.Uri.parse(url));
+    const anyHarness = HARNESS_IDS.some((id) => r.harnesses[id]);
+    const items: Item[] = [
+      { label: `${r.git ? "$(check)" : "$(error)"} git`, description: r.git ?? "not found", detail: r.git ? undefined : installHint("git"), run: r.git ? undefined : open(TOOL_HELP.git.url) },
+      { label: `${r.gh ? "$(check)" : "$(error)"} GitHub CLI (gh)`, description: r.gh ?? "not found", detail: r.gh ? undefined : installHint("gh"), run: r.gh ? undefined : open(TOOL_HELP.gh.url) },
+      ...(r.gh
+        ? [
+            {
+              label: `${r.ghAuth === "signedIn" ? "$(check)" : r.ghAuth === "signedOut" ? "$(error)" : "$(question)"} Signed in to GitHub`,
+              description: { signedIn: "yes", signedOut: "no", unknown: "couldn't tell" }[r.ghAuth],
+              detail:
+                r.ghAuth === "signedIn"
+                  ? undefined
+                  : r.ghAuth === "signedOut"
+                    ? "Pick to open a terminal with gh auth login typed in."
+                    : "gh auth status didn't answer, or couldn't reach GitHub. Pick to sign in again in a terminal.",
+              run: r.ghAuth === "signedIn" ? undefined : () => signIn("gh"),
+            },
+          ]
+        : []),
+      { label: "Agent CLIs: one is enough", kind: vscode.QuickPickItemKind.Separator },
+      ...HARNESS_IDS.map((id): Item => {
+        const found = r.harnesses[id];
+        const isDefault = id === r.defaultHarness;
+        const icon = found ? "$(check)" : !anyHarness || isDefault ? "$(error)" : "$(circle-large-outline)";
+        const command = terminalCommand(readConfig().harnesses[id].command, id);
+        return {
+          label: `${icon} ${HARNESS_NAME[id]}`,
+          description: [found ?? "not found", isDefault ? "default" : ""].filter(Boolean).join(" · "),
+          detail: found
+            ? `To sign in, pick to open a terminal with ${command} typed in.`
+            : `${isDefault && anyHarness ? "The default isn't installed: choose another below, or install it. " : ""}${installHint(id)}. Or set diffline.${id}.path.`,
+          run: found ? () => signIn(id) : open(TOOL_HELP[id].url),
+        };
+      }),
+      { label: "", kind: vscode.QuickPickItemKind.Separator },
+      { label: "$(checklist) Get Started with Diffline", detail: "Each step, with install commands for macOS, Windows and Linux", run: () => openWalkthrough(issues.length ? ISSUE_STEP[issues[0]] : undefined) },
+      { label: "$(settings-gear) Choose Agent Harnesses…", run: () => vscode.commands.executeCommand("diffline.selectHarness") },
+      { label: "$(refresh) Check Again", run: () => vscode.commands.executeCommand("diffline.checkSetup") },
+    ];
+    const pick = await vscode.window.showQuickPick(items, {
+      title: issues.length ? `Diffline setup: ${issues.length} thing${issues.length === 1 ? "" : "s"} to fix` : "Diffline setup: everything's here",
+      placeHolder: issues.length ? setupMessage(r) : "Pick an agent CLI to sign in to it in a terminal",
+      matchOnDetail: true,
+    });
+    await pick?.run?.();
+  };
+
   const command = (id: string, fn: (...args: any[]) => unknown) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
   // Refresh checks everything at once: the main list, recently closed pull requests, team requests and others.
   command("diffline.refresh", async () => {
+    void recheckSetup();
     await vscode.window.withProgress({ location: { viewId: "diffline.pullRequests" } }, () => service.refresh({ full: true }).catch((err) => vscode.window.showErrorMessage(`Diffline: ${err.message}`)));
   });
   command("diffline.open", async (arg: unknown) => {
@@ -553,7 +711,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
     const pick = await vscode.window.showQuickPick(options, { title: "Sort pull requests" });
     if (pick) await vscode.workspace.getConfiguration("diffline.sidebar").update("sortBy", pick.value, vscode.ConfigurationTarget.Global);
   });
-  command("diffline.selectHarness", () => chooseHarnesses());
+  command("diffline.selectHarness", async () => {
+    try {
+      await chooseHarnesses();
+    } finally {
+      void recheckSetup();
+    }
+  });
+  command("diffline.checkSetup", async () => {
+    const report = await vscode.window.withProgress({ location: vscode.ProgressLocation.Window, title: "Checking Diffline's setup" }, () => recheckSetup());
+    await showSetupReport(report);
+  });
+  command("diffline.getStarted", (step?: unknown) => openWalkthrough(typeof step === "string" ? step : undefined));
+  command("diffline.setup.signIn", (tool?: unknown) => signIn(tool));
+  /** The welcome view's and the walkthrough's Check again: update what they show, and say what's still missing. */
+  command("diffline.setup.checkAgain", async () => {
+    const report = await vscode.window.withProgress({ location: { viewId: "diffline.pullRequests" } }, () => recheckSetup());
+    const issues = setupIssues(report);
+    if (!issues.length) return void vscode.window.showInformationMessage("Diffline has everything it needs.");
+    const choice = await vscode.window.showWarningMessage(`${setupMessage(report)} Just installed something? Restart ${vscode.env.appName || "the editor"} so Diffline finds it.`, "Set up");
+    if (choice) await openWalkthrough(ISSUE_STEP[issues[0]]);
+  });
   /** Add a reviewer agent: name it, say what it looks at, then write its instructions. */
   const newAgent = async () => {
     await ensureSettings();
@@ -659,6 +837,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
       }
       if (e.affectsConfiguration("diffline")) {
         service.configChanged();
+        if (["diffline.harness", "diffline.claude.path", "diffline.codex.path", "diffline.pi.path"].some((s) => e.affectsConfiguration(s))) void recheckSetup();
         // What's listed, automatic runs and clones show after a refresh; sorting, grouping and harnesses don't need one.
         // A change to what's watched searches everything again, the background searches included.
         if (["diffline.watch", "diffline.agents", "diffline.clones"].some((s) => e.affectsConfiguration(s))) void service.refresh({ full: e.affectsConfiguration("diffline.watch") }).catch(() => undefined);
@@ -678,7 +857,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<Diffli
   updateStatus();
   showSidebarMode();
   log(`Diffline started. Agents run with ${readConfig().harnesses.default} unless agents.yml says otherwise; data in ${context.globalStorageUri.fsPath}.`);
-  return { service, panel, openLink };
+  const setupCheck = recheckSetup().then(
+    (report) => (void offerSetup(report), report),
+    (err) => (log(`Couldn't check the setup: ${err instanceof Error ? err.message : err}`), null),
+  );
+  return { service, panel, openLink, setupCheck };
 }
 
 export function deactivate(): void {

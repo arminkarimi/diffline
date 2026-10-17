@@ -27,7 +27,9 @@ Website and docs: [diffline.dev](https://diffline.dev). Every feature is describ
 - **VS Code** 1.95 or later, or **Cursor**. Everything here works the same in both; where this README says VS Code, read Cursor if that's your editor.
 - **GitHub CLI** ([cli.github.com](https://cli.github.com)), signed in: `gh auth login`. Diffline reads pull requests and posts reviews through it.
 - **git**.
-- **An agent harness**: the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) (`claude`), the [Codex CLI](https://github.com/openai/codex) (`codex`) or [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (`pi`), installed and signed in. Pi works with many model providers: sign in by running `pi`, then `/login`, or set your provider's API key. Use one or more: **Diffline: Choose Agent Harnesses…** sets the default and, if you like, a different one per agent.
+- **An agent harness**: the [Claude Code CLI](https://code.claude.com/docs/en/setup) (`claude`), the [Codex CLI](https://github.com/openai/codex) (`codex`) or [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (`pi`), installed and signed in. Pi works with many model providers: sign in by running `pi`, then `/login`, or set your provider's API key. Use one or more: **Diffline: Choose Agent Harnesses…** sets the default and, if you like, a different one per agent.
+
+Diffline checks for these when it starts and tells you what's missing. **Get started with Diffline** has the install commands for macOS, Windows and Linux (see [First run](#first-run)).
 
 ## Install
 
@@ -40,6 +42,10 @@ Diffline is on the [Visual Studio Marketplace](https://marketplace.visualstudio.
 Reload the window if your editor asks. Installed from a store, Diffline updates like your other extensions; to update a `.vsix` install, install the newer file the same way. To remove Diffline, uninstall it from the Extensions view; `~/.diffline` stays until you delete it.
 
 ## First run
+
+VS Code opens **Get started with Diffline** when you install it. Its steps cover installing git, the GitHub CLI and an agent CLI (with the commands for macOS, Windows and Linux), signing in, choosing the agent CLI and opening a first pull request. Each step ticks off when Diffline finds what it needs. **Diffline: Get Started** opens it again.
+
+If something is missing when Diffline starts, a notification names it. **Set up** opens the walkthrough at that step; **Don't show again** turns the notification off. While its list is empty, the sidebar says what's missing too, with buttons to install, to sign in (a terminal opens with `gh auth login` typed in; press Enter) and **Check again**. **Diffline: Check Setup** lists what it found, with versions, and the fix for anything that's missing.
 
 1. Click the Diffline icon in the activity bar. The sidebar lists your open pull requests within a few seconds. If it stays empty, see [Troubleshooting](#troubleshooting).
 2. Diffline writes its default agent settings to `~/.diffline` and says so. **Customize** opens them; you can leave them as they are.
@@ -223,6 +229,8 @@ What leaves it:
 
 ## Troubleshooting
 
+- **Something's missing, or you're not sure what is.** Run **Diffline: Check Setup**. It lists git, the GitHub CLI and its sign-in, and each agent CLI with its version or "not found", and picking a row fixes it: the install page, or a terminal to sign in.
+- **You installed a CLI, but Diffline still doesn't find it.** Diffline sees the `PATH` VS Code started with, so restart VS Code, or set `diffline.claude.path`, `diffline.codex.path` or `diffline.pi.path` to the full path.
 - **The sidebar is empty, or the status bar shows a warning.** Run `gh auth status` in a terminal, and `gh auth login` if you're signed out. Hover the warning for GitHub's error. Team requests and code-owner matches need the `read:org` scope: `gh auth refresh -s read:org`.
 - **"The GitHub CLI (gh) isn't installed or isn't on the PATH."** Install it, then restart VS Code.
 - **An agent harness isn't found, or agents fail with a sign-in error.** **Diffline: Choose Agent Harnesses…** shows "not found" next to a CLI it can't run. Install it, or set `diffline.claude.path`, `diffline.codex.path` or `diffline.pi.path` to the full path (`which claude`, `which codex`, `which pi`). Run the CLI once in a terminal to sign in. A missing or signed-out CLI fails only the agents that use it.

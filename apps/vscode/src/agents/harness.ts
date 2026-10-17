@@ -523,10 +523,10 @@ export async function runAgent(h: HarnessConfig, r: AgentRun): Promise<AgentResu
   }
 }
 
-/** Check that the harness CLI is installed; returns its version line. */
-export async function harnessVersion(h: HarnessConfig): Promise<string | null> {
+/** Check that the harness CLI is installed; returns its version line. `runner` stands in for exec's run in tests. */
+export async function harnessVersion(h: Pick<HarnessConfig, "command">, runner: typeof run = run): Promise<string | null> {
   try {
-    const res = await run(h.command, ["--version"], { timeoutMs: 15_000 });
+    const res = await runner(h.command, ["--version"], { timeoutMs: 15_000 });
     // Pi prints its version to stderr when its input isn't a terminal.
     return res.code === 0 ? (res.stdout.trim() || res.stderr.trim()).split("\n")[0] || null : null;
   } catch {

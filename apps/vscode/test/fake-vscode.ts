@@ -65,8 +65,17 @@ const disposable = () => ({ dispose: () => undefined });
 export const registered = new Map<string, (...args: any[]) => unknown>();
 /** URI handlers the extension registered. */
 export const uriHandlers: Array<{ handleUri(uri: unknown): unknown }> = [];
-/** Messages shown, as [kind, text]. */
-export const shown: Array<[string, string]> = [];
+/** Messages shown, as [kind, text, the buttons offered]. */
+export const shown: Array<[string, string, string[]?]> = [];
+/** How the next message whose text matches answers (the button pressed); unmatched messages are dismissed. */
+export const answers: Array<{ match: RegExp; answer: string }> = [];
+const message = (kind: string) => async (text: string, ...rest: unknown[]) => {
+  shown.push([kind, text, rest.filter((r): r is string => typeof r === "string")]);
+  const i = answers.findIndex((a) => a.match.test(text));
+  return i < 0 ? undefined : answers.splice(i, 1)[0].answer;
+};
+/** Terminals the extension opened: their options, what was typed and whether Enter was pressed. */
+export const terminals: Array<{ options: any; sent: Array<[string, boolean | undefined]>; shown: boolean }> = [];
 /** What the next input box answers (undefined: dismissed), and the options each one opened with. */
 export const inputBox: { answer: string | undefined; opened: any[] } = { answer: undefined, opened: [] };
 /** Settings by section and key ("diffline.watch.teamRequests"); missing ones read as the default the extension passes. */
@@ -85,9 +94,14 @@ export const window = {
     inputBox.opened.push(opts);
     return inputBox.answer;
   },
-  showInformationMessage: async (text: string) => void shown.push(["info", text]),
-  showWarningMessage: async (text: string) => void shown.push(["warning", text]),
-  showErrorMessage: async (text: string) => void shown.push(["error", text]),
+  showInformationMessage: message("info"),
+  showWarningMessage: message("warning"),
+  showErrorMessage: message("error"),
+  createTerminal: (options: unknown) => {
+    const t = { options, sent: [] as Array<[string, boolean | undefined]>, shown: false };
+    terminals.push(t);
+    return { show: () => void (t.shown = true), sendText: (text: string, addNewLine?: boolean) => void t.sent.push([text, addNewLine]), dispose() {} };
+  },
   showQuickPick: async () => undefined,
   withProgress: async (_o: unknown, fn: () => Promise<unknown>) => fn(),
   createWebviewPanel: () => {
@@ -103,6 +117,7 @@ export const window = {
 /** What the extension last put on the clipboard. */
 export const env = {
   uriScheme: "vscode",
+  appName: "Visual Studio Code",
   clipboard: {
     text: "",
     async writeText(text: string) {

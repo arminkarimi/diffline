@@ -242,6 +242,8 @@ export class DifflineService extends EventEmitter {
   private readonly details = new Map<string, { at: number; detail: PullRequestDetail }>();
   viewer: { login: string | null; name: string | null } | null = null;
   lastError: string | null = null;
+  /** What kind of failure lastError is, when gh said (missing, auth, ...); null when there's no error or it's not gh's. */
+  lastErrorKind: GhError["kind"] | null = null;
   lastRefresh: number | null = null;
   totals: Record<string, { shown: number; total: number }> = {};
   private refreshing: Promise<void> | null = null;
@@ -547,6 +549,7 @@ export class DifflineService extends EventEmitter {
       this.mainTotals = mainTotals;
       this.updateTotals();
       this.lastError = res.errors && res.errors.length ? res.errors.join("; ") : null;
+      this.lastErrorKind = null;
       // A pull request that left the main search may have just merged or closed: it keeps its row, and the
       // recently-closed search runs at once to say.
       const mainIds = new Set(res.items.map(idOf));
@@ -602,6 +605,7 @@ export class DifflineService extends EventEmitter {
       void this.warmUp();
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
+      this.lastErrorKind = err instanceof GhError ? err.kind : null;
       this.log(`GitHub: ${this.lastError}`);
       this.changed();
       throw err;

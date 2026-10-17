@@ -23,7 +23,7 @@ How the VS Code extension works. Paths are relative to `apps/vscode/` unless the
 | Folder | What's in it |
 | --- | --- |
 | `src/extension.ts` | Activation: wires the pieces together, registers commands, reads settings. |
-| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping, review metrics, the agent review export. Testable with plain Node. |
+| `src/core/` | Everything that doesn't need VS Code: the service, GitHub, clones, diffs, storage, locks, risk, grouping, review metrics, the agent review export, the setup check. Testable with plain Node. |
 | `src/agents/` | Agent settings, prompts, output schemas, the harnesses, running a review, and validating its output. |
 | `src/vscode/` | The VS Code surfaces: the review panel, the page builder, the sidebar tree. |
 | `test/` | Unit tests (`node --test`). `fake-vscode.ts` stands in for the `vscode` module. |
@@ -40,6 +40,9 @@ The extension activates on `onStartupFinished`, and on `onUri` so that a [link](
 3. Creates the `ReviewPanel` and the `PullRequestTree` sidebar, the status bar item, and the commands.
 4. Writes the default agent settings to `~/.diffline` on first run (`ensureSettings` in `src/agents/settings.ts`).
 5. Calls `service.start()`, which cleans up review checkouts left by windows that closed mid-run, refreshes from GitHub, and starts the timers.
+6. Checks the setup (`checkSetup` in `src/core/setup.ts`): `git --version`, `gh --version`, `gh auth status` and each harness's `--version`, in parallel, each with a timeout, without a shell. It sets the `diffline.setup.*` context keys (`gitMissing`, `ghMissing`, `ghSignedOut`, `noHarness`, `defaultHarnessMissing`, `incomplete`, `checked`) that the sidebar's welcome view and the **Get started with Diffline** walkthrough (`contributes.walkthroughs`) follow, and shows one notification for what's missing. The notification shows once per set of problems per session, and not at all after **Don't show again** (`diffline.setup.dontShow` in `globalState`). `gh auth status` is only matched, never logged: any working account counts as signed in, and a network failure is unknown rather than signed out. The agent CLIs are checked for being installed only; signing in is left to them.
+
+The check runs again on **Refresh**, **Check again**, after the harness picker closes, when `diffline.harness` or a CLI's path changes, and when the service's `lastErrorKind` becomes or stops being `missing` or `auth`. Checks run one at a time; asks during one share the next.
 
 Settings changes go to `service.configChanged()`. Changes to the agents or clones also trigger a refresh, and changes to what's watched (`diffline.watch.*`) a full one, background searches included (see [Background searches](#background-searches)). Grouping and sorting changes only redraw.
 
